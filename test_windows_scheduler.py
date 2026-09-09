@@ -134,6 +134,39 @@ class WindowsTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "无法进行终端确认"):
             create_signal_exam.confirm_exam_publish(args, object())
 
+    def test_activity_page_waits_for_login_then_continues(self):
+        target = create_signal_exam.activity_url("course1")
+
+        class Driver:
+            current_url = "https://login.example.test/sso"
+
+            def __init__(self):
+                self.visits = []
+
+            def get(self, url):
+                self.visits.append(url)
+                if len(self.visits) == 1:
+                    self.current_url = "https://login.example.test/sso"
+                else:
+                    self.current_url = target
+
+        driver = Driver()
+
+        def finish_login(current, timeout=300):
+            current.current_url = "https://aic.sysu.edu.cn/aic/home"
+
+        with patch.object(create_signal_exam, "wait_until_ready"), patch.object(
+            create_signal_exam, "is_login_page", side_effect=lambda current: "login.example" in current.current_url
+        ), patch.object(
+            create_signal_exam, "wait_for_login_if_needed", side_effect=finish_login
+        ) as wait_login, patch.object(
+            create_signal_exam, "body_text", return_value="创建活动"
+        ), patch.object(create_signal_exam, "visible", return_value=[]):
+            create_signal_exam.open_activity_page(driver, "course1", timeout=5)
+
+        wait_login.assert_called_once()
+        self.assertEqual(driver.visits, [target, target])
+
 
 if __name__ == "__main__":
     unittest.main()

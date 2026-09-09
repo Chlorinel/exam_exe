@@ -162,15 +162,37 @@ def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
     return webdriver.Edge(options=options)
 
 
-def open_activity_page(driver: webdriver.Edge, course_id: str) -> None:
-    driver.get(activity_url(course_id))
-    wait_for_login_if_needed(driver)
-    wait_until_ready(driver)
-    WebDriverWait(driver, 40).until(
-        lambda d: "创建活动" in body_text(d) or "/teaching-act" not in d.current_url
+def open_activity_page(driver: webdriver.Edge, course_id: str, timeout: int = 600) -> None:
+    """Open the activity page, allowing an interactive SSO login to finish first."""
+    target = activity_url(course_id)
+    driver.get(target)
+    deadline = time.monotonic() + timeout
+    login_seen = False
+    while time.monotonic() < deadline:
+        try:
+            wait_until_ready(driver, 15)
+        except TimeoutException:
+            pass
+        if is_login_page(driver):
+            if not login_seen:
+                print('检测到登录或统一认证页面；请完成登录，脚本会自动继续。', flush=True)
+                login_seen = True
+            remaining = max(1, int(deadline - time.monotonic()))
+            wait_for_login_if_needed(driver, timeout=remaining)
+            # SSO may return to a portal or course home instead of the original URL.
+            if '/teaching-act' not in (driver.current_url or ''):
+                driver.get(target)
+            continue
+        if '/teaching-act' in (driver.current_url or ''):
+            if '创建活动' in body_text(driver) and not visible(driver, '.route-loading'):
+                return
+        else:
+            # Authentication has completed but its return address was not preserved.
+            driver.get(target)
+        time.sleep(1)
+    raise RuntimeError(
+        f'登录或教学活动页在 {timeout} 秒内仍未准备完成，当前 URL 为 {driver.current_url}'
     )
-    if "/teaching-act" not in driver.current_url:
-        raise RuntimeError(f"未能进入教学活动页，当前 URL 为 {driver.current_url}")
 
 
 def resolve_exam_name(driver: webdriver.Edge, requested_name: str | None) -> str:
