@@ -1,0 +1,264 @@
+{
+  "probe": "selenium-edge-cdp-schema-only",
+  "page": {
+    "title": "中山大学-智课空间",
+    "url": {
+      "url": "https://aic.sysu.edu.cn/courseSpace.html",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/courseSpace.html",
+      "query_keys": [
+        "name"
+      ],
+      "sensitive_query_keys": []
+    }
+  },
+  "network_summary": {
+    "total_requests": 40,
+    "api_like_requests": 12
+  },
+  "api_like_requests": [
+    {
+      "method": "POST",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/console/v1/get-current-user-detail",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/console/v1/get-current-user-detail",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": {
+        "encoding": "json",
+        "shape": {
+          "type": "object",
+          "keys": {}
+        }
+      },
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "GET",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/user/get-user-id",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/user/get-user-id",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": null,
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "GET",
+      "resource_type": "ResourceType.FETCH",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/notification/info",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/notification/info",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": null,
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "GET",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/course-deliver/admin-permission",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/course-deliver/admin-permission",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": null,
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "GET",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/user/get-user-id",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/user/get-user-id",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": null,
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "GET",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/home-page/get-notify-file",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/home-page/get-notify-file",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": null,
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "GET",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/term/list",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/term/list",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": null,
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "POST",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://qdevent.sysu.edu.cn/events/sdk/trace",
+      "origin": "https://qdevent.sysu.edu.cn",
+      "path": "/events/sdk/trace",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": {
+        "encoding": "json",
+        "shape": {
+          "type": "object",
+          "keys": {
+            "appkey": "str",
+            "data": "str",
+            "ext": "int",
+            "sign": "str"
+          }
+        }
+      },
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "POST",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://qdevent.sysu.edu.cn/events/sdk/trace",
+      "origin": "https://qdevent.sysu.edu.cn",
+      "path": "/events/sdk/trace",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": {
+        "encoding": "json",
+        "shape": {
+          "type": "object",
+          "keys": {
+            "appkey": "str",
+            "data": "str",
+            "ext": "int",
+            "sign": "str"
+          }
+        }
+      },
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "POST",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/course-space/list/student",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/course-space/list/student",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": {
+        "encoding": "json",
+        "shape": {
+          "type": "object",
+          "keys": {
+            "pageNo": "int",
+            "pageSize": "int",
+            "termId": "int",
+            "keyword": "str",
+            "courseType": "int",
+            "courseStatus": "int"
+          }
+        }
+      },
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "POST",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://aic.sysu.edu.cn/cloud/agent-course-website/log/save",
+      "origin": "https://aic.sysu.edu.cn",
+      "path": "/cloud/agent-course-website/log/save",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": {
+        "encoding": "json",
+        "shape": {
+          "type": "object",
+          "keys": {
+            "role": "int",
+            "source": "str"
+          }
+        }
+      },
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    },
+    {
+      "method": "POST",
+      "resource_type": "ResourceType.XHR",
+      "url": "https://qdevent.sysu.edu.cn/events/sdk/trace",
+      "origin": "https://qdevent.sysu.edu.cn",
+      "path": "/events/sdk/trace",
+      "query_keys": [],
+      "sensitive_query_keys": [],
+      "request_body_schema": {
+        "encoding": "json",
+        "shape": {
+          "type": "object",
+          "keys": {
+            "appkey": "str",
+            "data": "str",
+            "ext": "int",
+            "sign": "str"
+          }
+        }
+      },
+      "status": 200,
+      "mime_type": "application/json",
+      "from_disk_cache": false,
+      "from_service_worker": false,
+      "response_schema_error": "AttributeError"
+    }
+  ],
+  "errors": [],
+  "note": "Only request field names/types and JSON response schema are retained; values, headers, cookies, authorization and response contents are not retained."
+}
