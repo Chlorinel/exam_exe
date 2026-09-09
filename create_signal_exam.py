@@ -1260,6 +1260,21 @@ def verify_published_exam(driver, config, state):
     state['status'] = 'waiting'
 
 
+def confirm_exam_publish(args, config):
+    """Ask once in an interactive terminal before publishing a prepared draft."""
+    if args.publish_exam:
+        return True
+    if args.headless or not sys.stdin.isatty():
+        raise RuntimeError('当前环境无法进行终端确认。请在交互终端运行 --run，或明确使用 --run --publish-exam。')
+    print('\n考试草稿已准备完成，请人工核对后决定是否发布：')
+    print(f'  考试：{config.exam_name}')
+    print(f'  班级：{config.class_code}')
+    print(f'  时间：{config.start:%Y-%m-%d %H:%M} 至 {config.end:%Y-%m-%d %H:%M}（北京时间）')
+    print(f'  题目：{len(config.questions)} 道')
+    answer = input('确认立即发布考试？输入 YES 发布，其他输入保留草稿并退出：').strip()
+    return answer == 'YES'
+
+
 def release_grades_once(args, config, state, state_path):
     if not state.get('exam_id'):
         raise RuntimeError('运行记录中没有考试编号，拒绝发布成绩。')
@@ -1335,8 +1350,8 @@ def run_configuration(args):
                     driver = launch_for_config(args)
                 open_existing(driver, config, state['exam_id'])
                 if '/create/' in driver.current_url:
-                    if not args.publish_exam:
-                        print('草稿已保存。请发布考试后重新 --run，或使用 --run --publish-exam 自动发布考试。')
+                    if not confirm_exam_publish(args, config):
+                        print('已取消发布，考试继续保留为草稿。')
                         return 0
                     publish_exam(driver, config, state, state_path)
                 else:

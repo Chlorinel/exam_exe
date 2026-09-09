@@ -107,6 +107,33 @@ class WindowsTaskTests(unittest.TestCase):
                 )
         launch.assert_not_called()
 
+    def test_run_publish_confirmation_requires_exact_yes(self):
+        args = type("Args", (), {"publish_exam": False, "headless": False})()
+        config = type(
+            "Config",
+            (),
+            {
+                "exam_name": "测试考试",
+                "class_code": "1001",
+                "start": datetime(2026, 9, 10, 10, 0, tzinfo=BEIJING),
+                "end": datetime(2026, 9, 10, 11, 0, tzinfo=BEIJING),
+                "questions": (1, 2),
+            },
+        )()
+        with patch.object(create_signal_exam.sys.stdin, "isatty", return_value=True), patch(
+            "builtins.input", return_value="YES"
+        ):
+            self.assertTrue(create_signal_exam.confirm_exam_publish(args, config))
+        with patch.object(create_signal_exam.sys.stdin, "isatty", return_value=True), patch(
+            "builtins.input", return_value="yes"
+        ):
+            self.assertFalse(create_signal_exam.confirm_exam_publish(args, config))
+
+    def test_headless_run_cannot_wait_for_publish_confirmation(self):
+        args = type("Args", (), {"publish_exam": False, "headless": True})()
+        with self.assertRaisesRegex(RuntimeError, "无法进行终端确认"):
+            create_signal_exam.confirm_exam_publish(args, object())
+
 
 if __name__ == "__main__":
     unittest.main()
