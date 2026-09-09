@@ -1334,7 +1334,7 @@ def publication_counts(driver):
     return {'total': total, 'published': published, 'unpublished': unpublished}
 
 
-def check_or_release(driver, config, state, state_path, *, commit=False):
+def check_or_release(driver, config, state, state_path, *, commit=False, before_release=None):
     open_existing(driver, config, state.get('exam_id'))
     if '/examList/' not in driver.current_url:
         return False, '考试尚未发布，仍是草稿。'
@@ -1360,6 +1360,8 @@ def check_or_release(driver, config, state, state_path, *, commit=False):
     ready, message = release_gate(config, now=datetime.now(BEIJING), actual_end=snapshot['actual_end'])
     if not ready:
         return False, message
+    if before_release is not None:
+        before_release()
     state['status'] = 'releasing_grades'
     save_state(state_path, state)
     exact_button(driver, '发布成绩').click()
@@ -1464,6 +1466,22 @@ def confirm_exam_publish(args, config):
     return answer == 'YES'
 
 
+def confirm_grade_release_for_test(args, config):
+    """Temporary test gate placed immediately before the grade-release click."""
+    if args.headless or not sys.stdin.isatty():
+        raise RuntimeError(
+            '已到达成绩发布按钮，但当前处于测试确认阶段；计划任务不会点击。'
+            '请在交互终端运行 --release-grades，并在提示时确认。'
+        )
+    print('\n成绩发布条件已经通过，脚本即将点击“发布成绩”：')
+    print(f'  考试：{config.exam_name}')
+    print(f'  班级：{config.class_code}')
+    print(f'  计划发布时间：{config.release_at:%Y-%m-%d %H:%M}（北京时间）')
+    answer = input('确认现在点击“发布成绩”？输入 YES 发布，其他输入停止：').strip()
+    if answer != 'YES':
+        raise RuntimeError('用户未确认发布成绩；脚本已停在点击之前。')
+
+
 def release_grades_once(args, config, state, state_path):
     if not state.get('exam_id'):
         raise RuntimeError('运行记录中没有考试编号，拒绝发布成绩。')
@@ -1480,7 +1498,14 @@ def release_grades_once(args, config, state, state_path):
     driver = launch_for_config(args)
     driver._exam_unattended = bool(args.headless)
     try:
-        done, message = check_or_release(driver, config, state, state_path, commit=True)
+        done, message = check_or_release(
+            driver,
+            config,
+            state,
+            state_path,
+            commit=True,
+            before_release=lambda: confirm_grade_release_for_test(args, config),
+        )
         print(message)
     finally:
         driver.quit()

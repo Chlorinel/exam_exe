@@ -134,6 +134,31 @@ class WindowsTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "无法进行终端确认"):
             create_signal_exam.confirm_exam_publish(args, object())
 
+    def test_headless_grade_release_stops_before_click_during_test(self):
+        args = type("Args", (), {"headless": True})()
+        with self.assertRaisesRegex(RuntimeError, "计划任务不会点击"):
+            create_signal_exam.confirm_grade_release_for_test(args, object())
+
+    def test_interactive_grade_release_requires_exact_yes(self):
+        args = type("Args", (), {"headless": False})()
+        config = type(
+            "Config",
+            (),
+            {
+                "exam_name": "测试考试",
+                "class_code": "1001",
+                "release_at": datetime(2026, 9, 10, 12, 1, tzinfo=BEIJING),
+            },
+        )()
+        with patch.object(create_signal_exam.sys.stdin, "isatty", return_value=True), patch(
+            "builtins.input", return_value="yes"
+        ), self.assertRaisesRegex(RuntimeError, "用户未确认"):
+            create_signal_exam.confirm_grade_release_for_test(args, config)
+        with patch.object(create_signal_exam.sys.stdin, "isatty", return_value=True), patch(
+            "builtins.input", return_value="YES"
+        ):
+            self.assertIsNone(create_signal_exam.confirm_grade_release_for_test(args, config))
+
     def test_activity_page_waits_for_login_then_continues(self):
         target = create_signal_exam.activity_url("course1")
 
