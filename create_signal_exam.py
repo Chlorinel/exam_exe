@@ -32,6 +32,7 @@ DEFAULT_TERM_ID = "20271"
 DEFAULT_COURSE_NAME = "信号与系统"
 DEFAULT_CLASS_CODE = "202613475"
 DEFAULT_EXAM_NAME = "第一次随堂测试"
+DEFAULT_EXAM_DESCRIPTION = "随堂小测"
 DEFAULT_PAPER_NAME = "随堂测试1"
 
 # Edit this list before running. Numbers are 1-based positions in the visible
@@ -697,6 +698,22 @@ def fill_exam_name(driver, name):
         raise RuntimeError(f'考试名称写入失败：当前“{actual}”。') from exc
 
 
+def fill_exam_description(driver, description=DEFAULT_EXAM_DESCRIPTION):
+    selector = 'textarea[placeholder="请输入考试相关的要求和信息"]'
+    field = unique(driver, selector)
+    if field.get_attribute('value') == description:
+        return False
+    set_input(driver, field, description)
+    try:
+        WebDriverWait(driver, 10).until(
+            lambda d: unique(d, selector).get_attribute('value') == description
+        )
+    except TimeoutException as exc:
+        actual = unique(driver, selector).get_attribute('value')
+        raise RuntimeError(f'考试描述写入失败：当前“{actual}”。') from exc
+    return True
+
+
 def exact_button(driver, label):
     found = exact_text_elements(driver, label, 'button')
     if len(found) != 1:
@@ -1046,6 +1063,9 @@ def verify_create_form(driver, config):
     except TimeoutException as exc:
         actual = unique(driver, 'input[placeholder="请输入考试名称"]').get_attribute('value')
         raise RuntimeError(f'考试名称未正确保留：当前“{actual}”。') from exc
+    description = unique(driver, 'textarea[placeholder="请输入考试相关的要求和信息"]').get_attribute('value')
+    if description != DEFAULT_EXAM_DESCRIPTION:
+        raise RuntimeError(f'考试描述未正确保留：当前“{description}”。')
     verify_schedule(driver, config)
     expected_total = sum((q.score or Decimal('0')) for q in config.questions)
     full_score = unique(driver, 'input[placeholder="请输入满分值"]').get_attribute('value')
@@ -1075,6 +1095,7 @@ def prepare_exam(driver, config, state, state_path):
         print('步骤：打开创建考试页。', flush=True)
         open_create_exam_page(driver, config.course_id, config.term_id)
     fill_exam_name(driver, config.exam_name)
+    fill_exam_description(driver)
     print('步骤：填写考试时间和成绩发布方式。', flush=True)
     fill_schedule(driver, config)
     # Configure questions auto-creates a server-side draft. Persist intent first.
@@ -1096,6 +1117,7 @@ def prepare_exam(driver, config, state, state_path):
     # Returning from the question bank can reload stale form values.
     fill_schedule(driver, config)
     fill_exam_name(driver, config.exam_name)
+    fill_exam_description(driver)
     duration = visible(driver, 'input[placeholder="请设置考试时长（如：60分）"]')
     if len(duration) == 1:
         # Limit duration to the configured exam window, rounded down to whole minutes.
@@ -1128,6 +1150,7 @@ def repair_legacy_question_exam(driver, config, state, state_path):
         finish_question_config(driver, config)
     fill_schedule(driver, config)
     fill_exam_name(driver, config.exam_name)
+    fill_exam_description(driver)
     duration = visible(driver, 'input[placeholder="请设置考试时长（如：60分）"]')
     if len(duration) == 1:
         minutes = int((config.end - config.start).total_seconds() // 60)
@@ -1181,23 +1204,68 @@ def confirm_known_dialog(driver, words):
     if len(dialogs) != 1:
         raise RuntimeError('出现多个确认框，停止操作。')
     candidates = []
-    for label in ('确定', '确认', '发布', '发布成绩', '确认发布'):
-        candidates.extend(exact_text_elements(dialogs[0], label, 'button'))
+    selected_label = None
+    for label in ('确定', '确认发布', '发布成绩', '确认', '发布'):
+        candidates = driver.execute_script(
+            """
+            const root = arguments[0], target = arguments[1];
+            const norm = value => (value || '').replace(/\\s+/g, ' ').trim();
+            const visible = element => !!(element.offsetWidth || element.offsetHeight || element.getClientRects().length);
+            return [...root.querySelectorAll('*')].filter(element =>
+                visible(element) && norm(element.innerText) === target &&
+                ![...element.children].some(child => visible(child) && norm(child.innerText) === target)
+            );
+            """,
+            dialogs[0],
+            label,
+        )
+        if candidates:
+            selected_label = label
+            break
     if len(candidates) != 1:
-        raise RuntimeError('发布确认按钮不唯一，停止操作。')
-    candidates[0].click()
+        raise RuntimeError(f'发布确认控件“{selected_label or "确定"}”不唯一（{len(candidates)} 个），停止操作。')
+    driver.execute_script('arguments[0].click();', candidates[0])
     return True
 
 
 def publish_exam(driver, config, state, state_path):
     if datetime.now(BEIJING) >= config.start:
         raise RuntimeError('考试开始时间已到，停止自动发布考试。')
+    WebDriverWait(driver, 60).until(
+        lambda d: not any(_is_displayed(e) for e in d.find_elements(By.CSS_SELECTOR, '.route-loading'))
+    )
     verify_create_form(driver, config)
     state['status'] = 'publishing_exam'
     save_state(state_path, state)
-    exact_button(driver, '发布').click()
-    time.sleep(1)
-    confirm_known_dialog(driver, ('发布考试', '发布'))
+    publish_button = exact_button(driver, '发布')
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", publish_button)
+    driver.execute_script('arguments[0].click();', publish_button)
+
+    def publish_response(current):
+        dialogs = [e for e in visible(current, '[role="dialog"]') if '发布' in norm(e.text)]
+        if dialogs:
+            return 'dialog'
+        if '/create/' not in (current.current_url or ''):
+            return 'navigated'
+        return False
+
+    try:
+        response = WebDriverWait(driver, 15).until(publish_response)
+    except TimeoutException as exc:
+        errors = [norm(e.text) for e in visible(driver, '.el-form-item__error,.el-message,.el-notification') if norm(e.text)]
+        raise RuntimeError(
+            '点击发布后页面没有出现确认框或跳转：'
+            + json.dumps({'errors': errors, 'page_text': body_text(driver)[-900:]}, ensure_ascii=False)
+        ) from exc
+    if response == 'dialog':
+        if not confirm_known_dialog(driver, ('发布考试', '发布')):
+            raise RuntimeError('检测到发布确认框，但无法确认唯一的确认按钮。')
+        try:
+            WebDriverWait(driver, 20).until(lambda d: '/create/' not in (d.current_url or ''))
+        except TimeoutException:
+            # Some releases keep the edit route after success; the activity list
+            # below is the authoritative read-back.
+            pass
     open_existing(driver, config, state['exam_id'])
     if '/examList/' not in driver.current_url:
         raise RuntimeError('无法确认考试已发布，停止自动重试。')
@@ -1476,7 +1544,19 @@ def run_configuration(args):
                         open_existing(driver, config, state['exam_id'])
                         if '/create/' not in driver.current_url:
                             raise RuntimeError('修复考试类型后无法重新打开草稿。')
+                    description_changed = fill_exam_description(driver)
                     verify_create_form(driver, config)
+                    if description_changed:
+                        state['status'] = 'prepared'
+                        save_state(state_path, state)
+                        save_prepared(driver, config, state, state_path)
+                        open_existing(driver, config, state['exam_id'])
+                        if '/create/' not in driver.current_url:
+                            raise RuntimeError('保存考试描述后无法重新打开草稿。')
+                        verify_create_form(driver, config)
+                    if state.get('status') == 'publishing_exam':
+                        # A fresh read has proved the prior publish attempt left a draft.
+                        state['status'] = 'saved'
                     state.pop('last_error', None)
                     state.pop('error_trace', None)
                     state.pop('last_page', None)
