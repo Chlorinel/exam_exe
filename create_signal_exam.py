@@ -4,7 +4,7 @@ from __future__ import annotations
 
 Default/--validate/--dry-run only read local configuration.
 --prepare writes an unpublished draft. Opening 配置试题 itself auto-saves a draft.
---run resumes from a durable receipt and waits for the configured grade-release time.
+--run resumes from a durable receipt and schedules the configured grade-release time.
 --publish-exam explicitly permits publishing the exam to its configured class.
 No automatic grading, account scraping, or credential export is performed.
 """
@@ -415,6 +415,10 @@ REL = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id'
 
 
 class ConfigError(ValueError):
+    pass
+
+
+class LoginRequired(RuntimeError):
     pass
 
 
@@ -1192,21 +1196,108 @@ def wait_for_login_if_needed(driver, timeout=300):
     if not is_login_page(driver):
         return
     if getattr(driver, '_exam_unattended', False) or getattr(driver, '_exam_headless', False):
-        raise RuntimeError('独立浏览器登录已失效。请去掉 --headless 完成登录后，用原运行记录恢复。')
+        raise LoginRequired('独立浏览器登录已失效。请去掉 --headless 完成登录后，用原运行记录恢复。')
     print('请在脚本打开的 Edge 中完成登录；脚本最多等待 5 分钟并自动继续。', flush=True)
     WebDriverWait(driver, timeout).until(lambda d: not is_login_page(d))
     wait_until_ready(driver)
 
 
+def _scheduler_functions():
+    from scheduler.windows_task import (
+        create_grade_release_task,
+        delete_grade_release_task,
+        task_exists,
+        task_name,
+    )
+    return create_grade_release_task, delete_grade_release_task, task_exists, task_name
+
+
+def ensure_grade_release_task(config, state, config_path, state_path, profile_dir):
+    if config.release_method != '定时脚本发布' or config.release_at is None:
+        raise RuntimeError('当前配置不是定时脚本发布，不能创建成绩发布任务。')
+    if not state.get('exam_id'):
+        raise RuntimeError('运行记录中没有考试编号，不能创建成绩发布任务。')
+    if state.get('status') == 'grades_published':
+        raise RuntimeError('成绩已经发布，不再创建计划任务。')
+    if state.get('status') != 'waiting':
+        raise RuntimeError('尚未确认考试已经发布，不能创建成绩发布任务。')
+    if config.release_at <= datetime.now(BEIJING):
+        raise RuntimeError('计划成绩发布时间已经到达；请直接运行 --release-grades。')
+    create_task, _, exists, get_name = _scheduler_functions()
+    create_task(config_path, state_path, config.release_at, profile_dir=profile_dir)
+    name = get_name(config, state)
+    if not exists(name):
+        raise RuntimeError('schtasks.exe 返回成功，但重新查询不到成绩发布任务。')
+    state['scheduled_grade_release'] = {
+        'enabled': True,
+        'task_name': name,
+        'release_at': config.release_at.isoformat(),
+        'created_at': datetime.now(BEIJING).isoformat(),
+    }
+    state.pop('last_error', None)
+    state.pop('error_trace', None)
+    save_state(state_path, state)
+    print(f'成绩发布计划任务已创建：{name}，执行时间 {config.release_at:%Y-%m-%d %H:%M}（北京时间）。')
+
+
+def delete_scheduled_grade_release(config, state, state_path):
+    _, delete_task, _, _ = _scheduler_functions()
+    delete_task(config, state)
+    scheduled = state.get('scheduled_grade_release')
+    if isinstance(scheduled, dict):
+        scheduled['enabled'] = False
+        scheduled['deleted_at'] = datetime.now(BEIJING).isoformat()
+    save_state(state_path, state)
+
+
+def verify_published_exam(driver, config, state):
+    if not state.get('exam_id'):
+        raise RuntimeError('运行记录中没有考试编号。')
+    open_existing(driver, config, state['exam_id'])
+    if '/examList/' not in driver.current_url:
+        raise RuntimeError('考试尚未发布，不能创建成绩发布计划任务。')
+    state['detail_url'] = driver.current_url
+    state['status'] = 'waiting'
+
+
+def release_grades_once(args, config, state, state_path):
+    if not state.get('exam_id'):
+        raise RuntimeError('运行记录中没有考试编号，拒绝发布成绩。')
+    if config.release_method != '定时脚本发布' or config.release_at is None:
+        raise RuntimeError('当前配置不是定时脚本发布，拒绝发布成绩。')
+    if state.get('status') == 'grades_published':
+        delete_scheduled_grade_release(config, state, state_path)
+        print('成绩已经发布；残留的 Windows 计划任务已清理。')
+        return 0
+    if datetime.now(BEIJING) < config.release_at:
+        raise RuntimeError(f'尚未到计划成绩发布时间 {config.release_at:%Y-%m-%d %H:%M}。')
+    if state.get('status') not in ('waiting', 'releasing_grades'):
+        raise RuntimeError(f'当前状态为 {state.get("status")}，不能执行独立成绩发布。')
+    driver = launch_for_config(args)
+    driver._exam_unattended = bool(args.headless)
+    try:
+        done, message = check_or_release(driver, config, state, state_path, commit=True)
+        print(message)
+    finally:
+        driver.quit()
+    if not done:
+        raise RuntimeError('本次未发布成绩；计划任务保留，请核对运行记录。')
+    delete_scheduled_grade_release(config, state, state_path)
+    print('成绩发布成功，Windows 计划任务已删除。')
+    return 0
+
+
 def run_configuration(args):
     config = load_config(args.config)
     print(config.summary())
-    if args.validate or args.dry_run or not (args.prepare or args.run or args.check):
+    if args.validate or args.dry_run or not (args.prepare or args.run or args.check or args.release_grades or args.schedule_grades):
         print('配置校验通过。仅本地检查，没有打开浏览器、创建考试或发布成绩。')
         return 0
     state_path = args.state or args.config.with_suffix('.state.json')
     with ProcessLock(state_path.with_suffix('.lock')):
         state = load_state(state_path, config)
+        if args.release_grades:
+            return release_grades_once(args, config, state, state_path)
         if state.get('status') == 'grades_published':
             print('这场考试的成绩已发布，任务完成。')
             return 0
@@ -1216,6 +1307,14 @@ def run_configuration(args):
                 driver = launch_for_config(args)
                 done, message = check_or_release(driver, config, state, state_path, commit=False)
                 print(message)
+                return 0
+            if args.schedule_grades:
+                driver = launch_for_config(args)
+                verify_published_exam(driver, config, state)
+                save_state(state_path, state)
+                driver.quit()
+                driver = None
+                ensure_grade_release_task(config, state, args.config, state_path, args.profile_dir)
                 return 0
             if state['status'] in ('new', 'draft_created') or (state['status'] == 'creating' and state.get('exam_id')):
                 driver = launch_for_config(args)
@@ -1250,32 +1349,10 @@ def run_configuration(args):
             if driver:
                 driver.quit()
                 driver = None
-            print(f'等待成绩发布时间：{config.release_at:%Y-%m-%d %H:%M}（北京时间）。可 Ctrl+C 停止，下次 --run 恢复。')
-            while datetime.now(BEIJING) < config.release_at:
-                remaining = (config.release_at - datetime.now(BEIJING)).total_seconds()
-                time.sleep(min(max(remaining, 0.1), 30))
-                if state_fingerprint(load_config(args.config)) != state['config_fingerprint']:
-                    raise RuntimeError('等待期间配置已修改，停止发布，请重新核对。')
-            deadline = config.release_at + timedelta(hours=24)
-            while datetime.now(BEIJING) < deadline:
-                if state_fingerprint(load_config(args.config)) != state['config_fingerprint']:
-                    raise RuntimeError('配置已改变，停止发布。')
-                driver = launch_for_config(args)
-                driver._exam_unattended = True
-                try:
-                    done, message = check_or_release(driver, config, state, state_path, commit=True)
-                    print(message)
-                finally:
-                    driver.quit()
-                    driver = None
-                if done:
-                    return 0
-                if state.get('last_check', {}).get('message', '').startswith('平台截止时间'):
-                    raise RuntimeError('平台考试时间有变更，停止定时发布。')
-                time.sleep(60)
-            raise RuntimeError('发布时间后 24 小时内仍未完成，停止等待，请检查批阅和平台状态。')
+            ensure_grade_release_task(config, state, args.config, state_path, args.profile_dir)
+            return 0
         except Exception as exc:
-            state['last_error'] = f'{type(exc).__name__}: {exc}'
+            state['last_error'] = 'LOGIN_REQUIRED' if isinstance(exc, LoginRequired) else f'{type(exc).__name__}: {exc}'
             import traceback
             state['error_trace'] = traceback.format_exc()
             if driver:
@@ -1288,14 +1365,16 @@ def run_configuration(args):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='读取 Excel 配置，创建考试并在考后发布成绩（单文件）')
+    parser = argparse.ArgumentParser(description='读取 Excel 配置，创建考试并通过 Windows 计划任务在考后发布成绩')
     parser.add_argument('--config', type=Path, default=Path(__file__).with_name('考试配置表.xlsx'))
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--validate', action='store_true', help='只检查配置，不打开浏览器（默认）')
     group.add_argument('--dry-run', action='store_true', help='等同 --validate，绝不访问平台')
     group.add_argument('--prepare', action='store_true', help='创建并保存考试草稿，不发布考试、不等待成绩')
-    group.add_argument('--run', action='store_true', help='创建/恢复考试，并在计划时间后发布成绩')
+    group.add_argument('--run', action='store_true', help='创建/恢复考试，并创建成绩发布计划任务后退出')
     group.add_argument('--check', action='store_true', help='只读检查已存在考试的截止时间和发布状态')
+    group.add_argument('--release-grades', action='store_true', help='计划任务入口：仅对已发布考试执行一次成绩发布')
+    group.add_argument('--schedule-grades', action='store_true', help='为已发布考试创建或修复 Windows 成绩发布任务')
     parser.add_argument('--publish-exam', action='store_true', help='与 --run 配合，允许把考试草稿发布给配置班级')
     parser.add_argument('--state', type=Path, help='运行记录文件，默认与配置表同名的 .state.json')
     parser.add_argument('--profile-dir', type=Path, default=DEFAULT_PROFILE_DIR)
