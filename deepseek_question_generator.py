@@ -218,6 +218,15 @@ class DeepSeekSelectors:
         ".ds-button--primary.ds-button--filled.ds-button--circle",
     )
 
+    # “新对话”按钮文本。只用于 DeepSeek 首页仍恢复到旧会话时的兜底。
+    new_chat_texts: tuple[str, ...] = (
+        "新对话",
+        "开启新对话",
+        "新建对话",
+        "New chat",
+        "New Chat",
+    )
+
 
 @dataclass
 class DeepSeekWebConfig:
@@ -1090,14 +1099,98 @@ class DeepSeekWebGenerator:
         )
         self.ensure_logged_in()
 
-    def new_chat(self) -> None:
+    def _click_new_chat_control(self) -> bool:
         """
-        直接重新进入聊天首页，避免旧会话上下文影响出题。
+        DeepSeek 首页若仍恢复旧会话，则尝试点击“新对话”。
+
+        不依赖一个固定 CSS class，而是按可见文本寻找可点击元素。
         """
         assert self.driver is not None
+
+        for label in self.config.selectors.new_chat_texts:
+            xpath = (
+                "//*[self::button or self::a or @role='button']"
+                f"[normalize-space(.)={json.dumps(label, ensure_ascii=False)}]"
+            )
+
+            elements = self.driver.find_elements(
+                By.XPATH,
+                xpath,
+            )
+
+            for element in elements:
+                if not _is_displayed(element):
+                    continue
+
+                try:
+                    element.click()
+                except WebDriverException:
+                    try:
+                        self.driver.execute_script(
+                            "arguments[0].click();",
+                            element,
+                        )
+                    except WebDriverException:
+                        continue
+
+                return True
+
+        return False
+
+    def _conversation_is_fresh(self) -> bool:
+        """
+        新对话必须没有任何 AI 历史回答。
+
+        这是比单纯检查 URL 更可靠的条件：
+        DeepSeek 的路由结构以后可能改变，但新会话不应带旧回答。
+        """
+        return len(self._answers()) == 0
+
+    def new_chat(self) -> None:
+        """
+        强制进入全新对话。
+
+        每次批量出题、每次单题重生成都必须调用这里。
+        如果直接打开聊天首页后仍恢复到旧会话，则点击“新对话”；
+        最终仍检测到历史 AI 回复时，fail closed，不发送 Prompt。
+        """
+        assert self.driver is not None
+
+        self.log("DeepSeek：创建全新对话。")
+
+        # 第一层：直接进入聊天首页。
         self.driver.get(self.config.chat_url)
         self.ensure_logged_in()
         self.wait_for_input()
+
+        # 给前端一点时间恢复路由/历史会话。
+        time.sleep(0.8)
+
+        if self._conversation_is_fresh():
+            return
+
+        # 第二层：如果首页恢复了旧对话，主动点击“新对话”。
+        clicked = self._click_new_chat_control()
+
+        if clicked:
+            WebDriverWait(
+                self.driver,
+                self.config.page_timeout,
+            ).until(
+                lambda d: (
+                    self._find_first_visible(
+                        self.config.selectors.input_selectors
+                    )
+                    is not None
+                )
+            )
+            time.sleep(0.8)
+
+        if not self._conversation_is_fresh():
+            raise RuntimeError(
+                "DeepSeek 未能确认进入全新对话。"
+                "为避免沿用旧上下文，本次不会发送出题 Prompt。"
+            )
 
     def wait_for_input(self) -> WebElement:
         assert self.driver is not None
@@ -1455,12 +1548,39 @@ return (
 
             time.sleep(self.config.poll_interval)
 
+    @staticmethod
+    def _is_conversation_limit_message(text: str) -> bool:
+        normalized = re.sub(r"\s+", "", text or "").lower()
+
+        markers = (
+            "达到对话长度上限",
+            "对话长度已达上限",
+            "当前对话已达到长度上限",
+            "请开启新对话",
+            "请开始新对话",
+            "conversationlengthlimit",
+            "conversationlimit",
+            "startanewchat",
+            "newconversation",
+        )
+        return any(
+            marker.replace(" ", "").lower() in normalized
+            for marker in markers
+        )
+
     def ask(
         self,
         prompt: str,
         *,
         new_chat: bool = True,
     ) -> str:
+        """
+        发送 AI 请求。
+
+        出题系统的默认且推荐行为始终是 new_chat=True。
+        如果 DeepSeek 仍返回“达到对话长度上限”，自动再新建一次
+        对话并重试一次。
+        """
         self.launch()
 
         if new_chat:
@@ -1469,7 +1589,28 @@ return (
             self.ensure_logged_in()
 
         before_count = self.submit_prompt(prompt)
-        return self.wait_for_answer(before_count)
+        response = self.wait_for_answer(before_count)
+
+        if (
+            new_chat
+            and self._is_conversation_limit_message(response)
+        ):
+            self.log(
+                "DeepSeek 提示当前对话达到长度上限；"
+                "正在自动开启新的对话并重试。"
+            )
+
+            self.new_chat()
+            before_count = self.submit_prompt(prompt)
+            response = self.wait_for_answer(before_count)
+
+            if self._is_conversation_limit_message(response):
+                raise RuntimeError(
+                    "DeepSeek 在全新对话中仍提示对话长度上限，"
+                    "已停止，避免继续重复发送。"
+                )
+
+        return response
 
     # ------------------------------------------------------------------
     # 主程序核心接口
@@ -1490,6 +1631,7 @@ return (
             f"{spec.count} 道"
         )
 
+        # 每一次出题都必须使用全新 DeepSeek 对话。
         raw_response = self.ask(
             build_generation_prompt(spec),
             new_chat=True,
@@ -1549,6 +1691,8 @@ return (
         供人工审核界面的“重新生成当前题”按钮调用。
         重生成后仍然是 pending。
         """
+        # 单题重新生成也使用全新 DeepSeek 对话，
+        # 不继承此前任何出题上下文。
         raw_response = self.ask(
             build_regeneration_prompt(
                 original,
