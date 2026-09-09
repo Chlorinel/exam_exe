@@ -167,6 +167,39 @@ class WindowsTaskTests(unittest.TestCase):
         wait_login.assert_called_once()
         self.assertEqual(driver.visits, [target, target])
 
+    def test_question_exam_mode_is_clicked_even_with_primary_style(self):
+        mode = type("Element", (), {"get_attribute": lambda self, name: "pl-button--primary"})()
+        custom = type("Element", (), {"get_attribute": lambda self, name: "pl-button"})()
+        configure = object()
+
+        def elements(driver, label, selector):
+            if label == "选题考试":
+                return [mode]
+            if label == "自定义考试":
+                return [custom]
+            if label == "配置试题":
+                return [configure]
+            return []
+
+        with patch.object(create_signal_exam, "exact_text_elements", side_effect=elements), patch.object(
+            create_signal_exam, "click_safely"
+        ) as click:
+            selected = create_signal_exam.activate_question_exam_mode(object())
+
+        self.assertIs(selected, configure)
+        click.assert_called_once_with(unittest.mock.ANY, mode)
+
+    def test_duplicate_course_labels_use_url_course_identity(self):
+        first = type("Element", (), {"text": "信号与系统"})()
+        second = type("Element", (), {"text": "信号与系统 (5)"})()
+        driver = type("Driver", (), {"current_url": "https://example.test/course-id/questions"})()
+        config = type("Config", (), {"course_name": "信号与系统", "course_id": "course-id"})()
+        with patch.object(create_signal_exam, "visible", return_value=[first, second]):
+            self.assertIs(
+                create_signal_exam.course_path_element(driver, config, ".title"),
+                second,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

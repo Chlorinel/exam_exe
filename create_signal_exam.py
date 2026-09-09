@@ -711,15 +711,52 @@ def select_mode(driver, label):
     WebDriverWait(driver, 10).until(lambda d: 'pl-button--primary' in exact_button(d, label).get_attribute('class'))
 
 
+def activate_question_exam_mode(driver):
+    """Explicitly select 选题考试 and verify its unique configuration control."""
+    question_mode = WebDriverWait(driver, 30).until(
+        lambda d: next(iter(exact_text_elements(d, '选题考试', 'button')), False)
+    )
+    # pl-button--primary is also used as a visual style on this page, so it is
+    # not reliable before interaction. Always perform the click, then compare
+    # both mutually exclusive mode buttons and require a unique edit control.
+    click_safely(driver, question_mode)
+
+    def selected_question_control(current):
+        question = exact_text_elements(current, '选题考试', 'button')
+        custom = exact_text_elements(current, '自定义考试', 'button')
+        if len(question) != 1 or len(custom) != 1:
+            return False
+        question_class = (question[0].get_attribute('class') or '').split()
+        custom_class = (custom[0].get_attribute('class') or '').split()
+        if 'pl-button--primary' not in question_class or 'pl-button--primary' in custom_class:
+            return False
+        configure = exact_text_elements(current, '配置试题', 'button')
+        edit = exact_text_elements(current, '编辑', 'button')
+        controls = configure if len(configure) == 1 else edit if len(edit) == 1 else []
+        return controls[0] if controls else False
+
+    try:
+        return WebDriverWait(driver, 20).until(selected_question_control)
+    except TimeoutException as exc:
+        question = exact_text_elements(driver, '选题考试', 'button')
+        custom = exact_text_elements(driver, '自定义考试', 'button')
+        diagnostic = {
+            'question_mode_class': question[0].get_attribute('class') if len(question) == 1 else None,
+            'custom_mode_class': custom[0].get_attribute('class') if len(custom) == 1 else None,
+            'configure_count': len(exact_text_elements(driver, '配置试题', 'button')),
+            'edit_count': len(exact_text_elements(driver, '编辑', 'button')),
+            'page_text': body_text(driver)[:600],
+        }
+        raise RuntimeError(
+            '无法同时确认“选题考试”已选中以及唯一的试题编辑入口。'
+            + json.dumps(diagnostic, ensure_ascii=False)
+        ) from exc
+
+
 def open_question_config_page(driver):
     # This site can keep a transparent .route-loading element mounted indefinitely.
     # Wait for the actual controls/navigation instead of that overlay's existence.
-    WebDriverWait(driver, 30).until(lambda d: exact_text_elements(d, '选题考试', 'button'))
-    select_mode(driver, '选题考试')
-    button = WebDriverWait(driver, 30).until(
-        lambda d: next(iter(exact_text_elements(d, '配置试题', 'button')), False)
-        or next(iter(exact_text_elements(d, '编辑', 'button')), False)
-    )
+    button = activate_question_exam_mode(driver)
     click_safely(driver, button)
     WebDriverWait(driver, 30).until(lambda d: '/questionbank-hub/config-question/' in d.current_url)
     WebDriverWait(driver, 30).until(lambda d: exact_text_elements(d, '题库选择', '.base-button-component'))
@@ -838,22 +875,48 @@ def count_badge(text_value):
     return int(match.group(1)) if match else None
 
 
+def course_path_element(driver, config, selector):
+    """Resolve duplicate rendered breadcrumb copies for the current course."""
+    def matching(elements):
+        return [
+            element
+            for element in elements
+            if re.sub(r'\s*[（(]\d+[)）]\s*$', '', norm(element.text)) == config.course_name
+        ]
+
+    matches = matching(visible(driver, selector))
+    if not matches and selector == '.AGENT_COURSE-driver-anchor .title':
+        # This release renders the breadcrumb class on a parent while the exact
+        # title is a sibling. The course id in the route remains authoritative.
+        matches = matching(visible(driver, '.title'))
+    if not matches:
+        visible_titles = [norm(e.text) for e in visible(driver, '.title') if norm(e.text)]
+        raise RuntimeError(
+            f'题库中没有找到当前课程路径“{config.course_name}”：'
+            + json.dumps(
+                {'selector': selector, 'url': driver.current_url, 'visible_titles': visible_titles[:30], 'page_text': body_text(driver)[:800]},
+                ensure_ascii=False,
+            )
+        )
+    if config.course_id not in (driver.current_url or ''):
+        raise RuntimeError('题库地址中的课程编号与配置不一致。')
+    # The responsive layout may render duplicate visible breadcrumb labels. They
+    # carry the same exact course name while the URL supplies the stable identity.
+    return matches[-1]
+
+
 def select_configured_questions(driver, config):
     click_visible_exact(driver, '题库选择', selectors='.base-button-component')
     WebDriverWait(driver, 30).until(lambda d: len(chapter_rows(d)) > 0)
-    course_links = exact_text_elements(driver, config.course_name, '.AGENT_COURSE-driver-anchor .title')
-    if len(course_links) != 1:
-        raise RuntimeError('题库课程路径不唯一，无法确认当前题库。')
+    course_path_element(driver, config, '.AGENT_COURSE-driver-anchor .title')
     selected = 0
     grouped = {}
     for q in config.questions:
         grouped.setdefault(q.chapter_name, []).append(q)
     for chapter_name, questions in grouped.items():
         if selected:
-            course_link = exact_text_elements(driver, config.course_name, '.title.clickable')
-            if len(course_link) != 1:
-                raise RuntimeError('无法返回课程题库。')
-            course_link[0].click()
+            course_link = course_path_element(driver, config, '.title.clickable')
+            course_link.click()
             WebDriverWait(driver, 30).until(lambda d: len(chapter_rows(d)) > 0)
         matches = [row for row in chapter_rows(driver) if re.sub(r'\s*[（(]\d+[)）]\s*$', '', norm(row.text)) == chapter_name]
         if len(matches) != 1:
@@ -1042,8 +1105,41 @@ def prepare_exam(driver, config, state, state_path):
             raise RuntimeError('考试时长写入失败。')
     verify_create_form(driver, config)
     state['edit_url'] = driver.current_url
+    state['exam_mode'] = 'question_bank'
     state['status'] = 'prepared'
     save_state(state_path, state)
+
+
+def repair_legacy_question_exam(driver, config, state, state_path):
+    """Repair drafts saved before exam-mode verification was introduced."""
+    expected_id = str(state.get('exam_id') or '')
+    if not expected_id.isdigit():
+        raise RuntimeError('运行记录中的考试编号无效，不能修复考试类型。')
+    print('步骤：重新选择“选题考试”并核对题目配置。', flush=True)
+    state['status'] = 'draft_created'
+    save_state(state_path, state)
+    open_question_config_page(driver)
+    if configuration_exam_id(driver.current_url) != expected_id:
+        raise RuntimeError('切换考试类型后的考试编号与运行记录不一致。')
+    WebDriverWait(driver, 30).until(lambda d: re.search(r'题目数[:：]\s*\d+\s*道', body_text(d)))
+    if re.search(r'题目数[:：]\s*0\s*道', body_text(driver)):
+        select_configured_questions(driver, config)
+    else:
+        finish_question_config(driver, config)
+    fill_schedule(driver, config)
+    fill_exam_name(driver, config.exam_name)
+    duration = visible(driver, 'input[placeholder="请设置考试时长（如：60分）"]')
+    if len(duration) == 1:
+        minutes = int((config.end - config.start).total_seconds() // 60)
+        set_input(driver, duration[0], minutes)
+        if Decimal(duration[0].get_attribute('value')) != minutes:
+            raise RuntimeError('考试时长写入失败。')
+    verify_create_form(driver, config)
+    state['exam_mode'] = 'question_bank'
+    state['edit_url'] = driver.current_url
+    state['status'] = 'prepared'
+    save_state(state_path, state)
+    save_prepared(driver, config, state, state_path)
 
 
 def save_prepared(driver, config, state, state_path):
@@ -1060,6 +1156,9 @@ def save_prepared(driver, config, state, state_path):
     verify_create_form(driver, config)
     state['status'] = 'saved'
     state['edit_url'] = driver.current_url
+    state.pop('last_error', None)
+    state.pop('error_trace', None)
+    state.pop('last_page', None)
     save_state(state_path, state)
     print(f'已保存并重新读取验证：{config.exam_name}，考试编号 {state["exam_id"]}。')
 
@@ -1372,6 +1471,16 @@ def run_configuration(args):
                     driver = launch_for_config(args)
                 open_existing(driver, config, state['exam_id'])
                 if '/create/' in driver.current_url:
+                    if state.get('exam_mode') != 'question_bank':
+                        repair_legacy_question_exam(driver, config, state, state_path)
+                        open_existing(driver, config, state['exam_id'])
+                        if '/create/' not in driver.current_url:
+                            raise RuntimeError('修复考试类型后无法重新打开草稿。')
+                    verify_create_form(driver, config)
+                    state.pop('last_error', None)
+                    state.pop('error_trace', None)
+                    state.pop('last_page', None)
+                    save_state(state_path, state)
                     if not confirm_exam_publish(args, config):
                         print('已取消发布，考试继续保留为草稿。')
                         return 0
