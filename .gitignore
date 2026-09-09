@@ -1,3 +1,8 @@
 __pycache__/
 *.py[cod]
+*.state.json
+*.state.lock
+*.deleted-exam-backup-*.json
+work/
+.pytest_cache/
 
