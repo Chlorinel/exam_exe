@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import posixpath
 import re
+import shutil
+import sys
 import tempfile
 from dataclasses import asdict
 from decimal import Decimal, InvalidOperation
@@ -38,6 +40,19 @@ QUESTION_COLUMNS = ("A", "B", "C", "D", "E")
 
 class ConfigWriteError(RuntimeError):
     pass
+
+
+def prepare_user_installation(root: Path) -> Path:
+    """Create writable user files without relying on CMD's filename encoding."""
+    root = Path(root).resolve()
+    template = root / "考试配置模板.xlsx"
+    config = root / "考试配置表.xlsx"
+    if not config.exists():
+        if not template.is_file():
+            raise ConfigWriteError(f"找不到考试配置模板：{template}")
+        shutil.copy2(template, config)
+    (root / "work").mkdir(parents=True, exist_ok=True)
+    return config
 
 
 def _qname(namespace: str, name: str) -> str:
@@ -836,3 +851,16 @@ def create_ai_exam_config(
         raise
 
     return output_path
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if len(arguments) == 2 and arguments[0] == "--prepare-install":
+        prepare_user_installation(Path(arguments[1]))
+        return 0
+    print("用法：config_writer.py --prepare-install <项目目录>", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

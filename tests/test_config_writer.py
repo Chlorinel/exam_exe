@@ -10,6 +10,7 @@ from ai_question_locator import LocatedQuestion
 from config_writer import (
     ConfigWriteError,
     create_ai_exam_config,
+    prepare_user_installation,
 )
 from create_signal_exam import load_config
 
@@ -43,6 +44,20 @@ def unused_slot():
 
 
 class ConfigWriterTests(unittest.TestCase):
+    def test_prepare_user_installation_copies_template_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "考试配置模板.xlsx"
+            template.write_bytes(b"template")
+
+            config = prepare_user_installation(root)
+            self.assertEqual(config.read_bytes(), b"template")
+            self.assertTrue((root / "work").is_dir())
+
+            config.write_bytes(b"user-edited")
+            prepare_user_installation(root)
+            self.assertEqual(config.read_bytes(), b"user-edited")
+
     def setUp(self):
         if not TEMPLATE.exists():
             self.skipTest(
