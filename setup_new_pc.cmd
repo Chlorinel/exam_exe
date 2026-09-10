@@ -5,8 +5,7 @@ title 考试自动化系统 - 新电脑环境配置
 
 set "REPO_URL=https://github.com/Chlorinel/exam_exe.git"
 for %%I in ("%~dp0.") do set "SCRIPT_DIR=%%~fI"
-set "TARGET_DIR=%USERPROFILE%\Documents\exam_exe"
-if exist "%SCRIPT_DIR%\.git" set "TARGET_DIR=%SCRIPT_DIR%"
+set "TARGET_DIR=%SCRIPT_DIR%\examworker"
 
 if /I "%~1"=="--check" goto CHECK_ONLY
 
