@@ -241,7 +241,7 @@ class DeepSeekWebConfig:
     edge_binary: str | None = None
     headless: bool = False
 
-    login_timeout: int = 300
+    login_timeout: int = 360
     page_timeout: int = 60
     generation_timeout: int = 360
 
@@ -1002,6 +1002,7 @@ class DeepSeekWebGenerator:
             options.add_argument("--window-size=1600,1200")
 
         self.driver = webdriver.Edge(options=options)
+        self.driver.set_page_load_timeout(self.config.page_timeout)
         self._active_headless = bool(headless)
         return self.driver
 
@@ -1019,10 +1020,14 @@ class DeepSeekWebGenerator:
         return self.launch(headless=headless)
 
     def _wait_for_login(self, input_ready) -> None:
-        """Keep the visible browser alive until the user finishes login."""
+        """Wait for the human login; closing the browser interrupts the flow."""
+        deadline = time.monotonic() + self.config.login_timeout
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("等待 DeepSeek 登录超过 6 分钟，已停止。")
             try:
-                WebDriverWait(self.driver, 60).until(input_ready)
+                WebDriverWait(self.driver, min(60, remaining)).until(input_ready)
                 return
             except TimeoutException:
                 self.log("仍在等待 DeepSeek 登录；完成后程序会自动继续。")
@@ -1095,7 +1100,7 @@ class DeepSeekWebGenerator:
 
         self.log(
             "请在自动打开的 Edge 中手动完成 "
-            "DeepSeek 登录/人机验证。"
+            "DeepSeek 登录/人机验证；关闭 Edge 可停止流程。"
         )
 
         self._wait_for_login(input_ready)

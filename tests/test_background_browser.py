@@ -8,6 +8,21 @@ import deepseek_question_generator as deepseek
 
 
 class BackgroundBrowserTests(unittest.TestCase):
+    def test_deepseek_login_wait_has_total_timeout(self):
+        config = deepseek.DeepSeekWebConfig(
+            profile_dir=Path("profile"),
+            login_timeout=360,
+        )
+        generator = deepseek.DeepSeekWebGenerator(config, driver=Mock())
+
+        with patch.object(
+            deepseek.time,
+            "monotonic",
+            side_effect=[0, 361],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "超过 6 分钟"):
+                generator._wait_for_login(Mock())
+
     def test_deepseek_login_switches_to_visible_and_back_to_headless(self):
         config = deepseek.DeepSeekWebConfig(
             profile_dir=Path("profile"),

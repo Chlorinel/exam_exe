@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -17,6 +18,55 @@ BEIJING = timezone(timedelta(hours=8))
 
 
 class WindowsTaskTests(unittest.TestCase):
+    def test_schtasks_timeout_fails_instead_of_hanging(self):
+        expired = subprocess.TimeoutExpired("schtasks.exe", 30)
+        with patch.object(
+            windows_task.subprocess,
+            "run",
+            side_effect=expired,
+        ) as run:
+            with self.assertRaisesRegex(RuntimeError, "等待超过 30 秒"):
+                windows_task._run_schtasks(["/Query", "/TN", "test"])
+
+        self.assertEqual(run.call_args.kwargs["timeout"], 30)
+
+    def test_publication_paging_stops_if_previous_page_does_not_change(self):
+        driver = Mock()
+        row = Mock(text="学生甲 已发布")
+        active = Mock(text="2")
+        previous = Mock()
+        previous.is_enabled.return_value = True
+        previous.get_attribute.side_effect = (
+            lambda name: "" if name == "class" else None
+        )
+
+        def fake_visible(current, selector):
+            if selector == ".el-table__body-wrapper tbody tr":
+                return [row]
+            if selector == ".el-pager li.active":
+                return [active]
+            if selector == "button.btn-prev":
+                return [previous]
+            return []
+
+        initial_wait = Mock()
+        initial_wait.until.return_value = True
+        stuck_wait = Mock()
+        stuck_wait.until.side_effect = create_signal_exam.TimeoutException()
+        with patch.object(
+            create_signal_exam,
+            "visible",
+            side_effect=fake_visible,
+        ), patch.object(
+            create_signal_exam,
+            "WebDriverWait",
+            side_effect=[initial_wait, stuck_wait],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "未能返回上一页"):
+                create_signal_exam.publication_counts(driver)
+
+        previous.click.assert_called_once_with()
+
     def test_headless_platform_login_reopens_visible_then_returns_to_background(self):
         background = Mock()
         visible = Mock()

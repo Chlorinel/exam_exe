@@ -40,12 +40,16 @@ def task_name(config, state) -> str:
 def _run_schtasks(arguments: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
     if os.name != "nt":
         raise RuntimeError("Windows 计划任务只能在 Windows 中创建。")
-    completed = subprocess.run(
-        ["schtasks.exe", *arguments],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["schtasks.exe", *arguments],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("Windows 计划任务操作等待超过 30 秒，已停止。") from exc
     if check and completed.returncode:
         encoding = "mbcs" if os.name == "nt" else "utf-8"
         output = (completed.stderr or completed.stdout).decode(encoding, errors="replace").strip()

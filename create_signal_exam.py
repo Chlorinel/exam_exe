@@ -139,33 +139,6 @@ def is_login_page(driver: webdriver.Edge) -> bool:
     return any(x in url for x in url_markers) or any(x.lower() in text for x in text_markers)
 
 
-def wait_for_login_if_needed(
-    driver: webdriver.Edge,
-    timeout: int = 300,
-) -> None:
-    """
-    若当前是登录页，只等待用户在 Edge 中完成登录。
-
-    不依赖终端按 Enter；适用于 GUI / pythonw.exe。
-    """
-    if not is_login_page(driver):
-        return
-
-    print(
-        "当前 Edge 配置需要登录。"
-        "请在打开的 Edge 窗口中完成登录；"
-        "登录成功后脚本会自动继续。",
-        flush=True,
-    )
-
-    WebDriverWait(driver, timeout).until(
-        lambda d: not is_login_page(d)
-    )
-    wait_until_ready(driver, 40)
-
-
-
-
 def activity_url(course_id: str) -> str:
     return f"{BASE_URL}/aic/{course_id}/teaching-act"
 
@@ -186,10 +159,12 @@ def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
     if headless:
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1600,1200")
-    return webdriver.Edge(options=options)
+    driver = webdriver.Edge(options=options)
+    driver.set_page_load_timeout(90)
+    return driver
 
 
-def open_activity_page(driver: webdriver.Edge, course_id: str, timeout: int = 600) -> None:
+def open_activity_page(driver: webdriver.Edge, course_id: str, timeout: int = 180) -> None:
     """Open the activity page, allowing an interactive SSO login to finish first."""
     target = activity_url(course_id)
     driver.get(target)
@@ -204,8 +179,7 @@ def open_activity_page(driver: webdriver.Edge, course_id: str, timeout: int = 60
             if not login_seen:
                 print('检测到登录或统一认证页面；请完成登录，脚本会自动继续。', flush=True)
                 login_seen = True
-            remaining = max(1, int(deadline - time.monotonic()))
-            wait_for_login_if_needed(driver, timeout=remaining)
+            wait_for_login_if_needed(driver)
             # Time spent by the user logging in must not consume the page-load budget.
             deadline = time.monotonic() + timeout
             # SSO may return to a portal or course home instead of the original URL.
@@ -1416,14 +1390,32 @@ def publication_counts(driver):
             and 'is-disabled' not in classes
         )
 
+    def page_marker():
+        active = visible(driver, '.el-pager li.active')
+        rows = visible(driver, '.el-table__body-wrapper tbody tr')
+        return (
+            norm(active[0].text) if active else '',
+            tuple(norm(row.text) for row in rows[:3]),
+        )
+
     WebDriverWait(driver, 60).until(
         lambda d: visible(d, '.el-table__body-wrapper tbody tr')
     )
-    previous = page_button('button.btn-prev')
-    while enabled(previous):
-        previous.click()
-        time.sleep(0.5)
+    for _ in range(200):
         previous = page_button('button.btn-prev')
+        if not enabled(previous):
+            break
+        marker = page_marker()
+        previous.click()
+        try:
+            WebDriverWait(driver, 15).until(
+                lambda d: page_marker() != marker
+                or not enabled(page_button('button.btn-prev'))
+            )
+        except TimeoutException as exc:
+            raise RuntimeError('成绩分页未能返回上一页，停止检查。') from exc
+    else:
+        raise RuntimeError('成绩分页超过回退上限。')
     total, published, unpublished = 0, 0, 0
     page = 0
     while True:
@@ -1711,12 +1703,13 @@ def open_visible_publish_review(driver, args, config, state):
 
 def wait_for_login_if_needed(
     driver: webdriver.Edge,
-    timeout: int = 300,
+    timeout: int = 360,
 ) -> None:
     """
     若当前是登录页，只等待用户在 Edge 中完成登录。
 
-    不依赖终端按 Enter；适用于 GUI / pythonw.exe。
+    不依赖终端按 Enter；适用于 GUI / pythonw.exe。关闭登录用的
+    Edge 窗口可立即终止；无人处理时最多等待 6 分钟。
     """
     if not is_login_page(driver):
         return
@@ -1724,13 +1717,17 @@ def wait_for_login_if_needed(
     print(
         "当前 Edge 配置需要登录。"
         "请在打开的 Edge 窗口中完成登录；"
-        "登录成功后脚本会自动继续。",
+        "登录成功后脚本会自动继续；关闭 Edge 可停止流程。",
         flush=True,
     )
 
+    deadline = time.monotonic() + timeout
     while is_login_page(driver):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('等待教学平台登录超过 6 分钟，已停止。')
         try:
-            WebDriverWait(driver, 60).until(
+            WebDriverWait(driver, min(60, remaining)).until(
                 lambda d: not is_login_page(d)
             )
         except TimeoutException:

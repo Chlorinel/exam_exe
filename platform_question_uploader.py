@@ -77,7 +77,7 @@ class UploadConfig:
     profile_dir: Path
     edge_binary: str | None = None
     headless: bool = False
-    login_timeout: int = 600
+    login_timeout: int = 360
     page_timeout: int = 90
 
     def question_bank_url(self) -> str:
@@ -220,6 +220,7 @@ class QuestionBankUploader:
         if headless:
             options.add_argument("--headless=new")
         self.driver = webdriver.Edge(options=options)
+        self.driver.set_page_load_timeout(self.config.page_timeout)
         self._active_headless = bool(headless)
         return self.driver
 
@@ -255,10 +256,20 @@ class QuestionBankUploader:
                 print("教学平台登录已失效，正在弹出 Edge 登录窗口。", flush=True)
                 driver = self._restart_browser(headless=False)
                 driver.get(target)
-            print("页面正在等待登录，请在打开的 Edge 中完成登录；登录后脚本会自动继续。", flush=True)
+            print(
+                "页面正在等待登录，请在打开的 Edge 中完成登录；"
+                "登录后脚本会自动继续，关闭 Edge 可停止流程。",
+                flush=True,
+            )
+            deadline = time.monotonic() + self.config.login_timeout
             while self._login_required():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError("等待教学平台登录超过 6 分钟，已停止。")
                 try:
-                    WebDriverWait(driver, 60).until(lambda _: not self._login_required())
+                    WebDriverWait(driver, min(60, remaining)).until(
+                        lambda _: not self._login_required()
+                    )
                 except TimeoutException:
                     print("仍在等待教学平台登录；完成后程序会自动继续。", flush=True)
             if target not in (driver.current_url or ""):
