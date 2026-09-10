@@ -148,12 +148,8 @@ git clone --depth 1 --single-branch --branch "%RUNTIME_BRANCH%" "%REPO_URL%" "%T
 exit /b %errorlevel%
 
 :PREPARE_USER_FILES
-if not exist "%TARGET_DIR%\考试配置表.xlsx" (
-    echo [配置] 创建用户考试配置表
-    copy /Y "%TARGET_DIR%\考试配置模板.xlsx" "%TARGET_DIR%\考试配置表.xlsx" >nul
-    if errorlevel 1 exit /b 1
-)
-if not exist "%TARGET_DIR%\work" mkdir "%TARGET_DIR%\work"
+echo [配置] 准备用户考试配置表和工作目录
+"%PYTHON_EXE%" "%TARGET_DIR%\config_writer.py" --prepare-install "%TARGET_DIR%"
 exit /b %errorlevel%
 
 :SETUP_VENV
