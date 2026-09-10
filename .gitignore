@@ -6,4 +6,5 @@ __pycache__/
 work/
 .pytest_cache/
 .venv/
+/考试配置表.xlsx
 
