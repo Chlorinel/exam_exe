@@ -7,6 +7,17 @@ from ai_question_locator import (
     locate_uploaded_questions,
 )
 from config_writer import create_ai_exam_config
+
+from exam_session import (
+    ExamQuestionRecord,
+    add_question,
+    create_session_from_batch,
+    find_question,
+    load_session,
+    save_session,
+    sync_review_from_batch,
+    update_status,
+)
 from create_signal_exam import load_config
 from deepseek_question_generator import load_question_batch
 from platform_question_uploader import (
@@ -27,6 +38,7 @@ def prepare_ai_exam_config(
     output_config_path: Path | None = None,
     batch_path: Path | None = None,
     upload_state_path: Path | None = None,
+    session_path: Path | None = None,
     platform_edge_binary: str | None = None,
     platform_headless: bool = False,
 ) -> Path | None:
@@ -44,6 +56,11 @@ def prepare_ai_exam_config(
         -> 再次调用现有 load_config() 验证
 
     本函数不会创建考试、不会发布考试、不会安排成绩发布。
+
+    本函数会保存本次 AI 出题会话：
+        work/current_exam_session.json
+
+    供后续考试创建和发布流程使用。
     """
 
     source_config_path = Path(
@@ -75,6 +92,11 @@ def prepare_ai_exam_config(
         parents=True,
         exist_ok=True,
     )
+
+    if session_path is None:
+        session_path = work_dir / "current_exam_session.json"
+    else:
+        session_path = Path(session_path).resolve()
 
     if batch_path is None:
         batch_path = (
@@ -121,6 +143,8 @@ def prepare_ai_exam_config(
             default_output_path=(
                 batch_path
             ),
+            session_path=session_path,
+            exam_name=base_config.exam_name,
         )
     )
 
@@ -150,6 +174,21 @@ def prepare_ai_exam_config(
     batch = load_question_batch(
         reviewed_batch_path
     )
+
+    # Real GUI generation creates the Session before review starts.  The
+    # fallback keeps older tests/callers that mock that GUI compatible.
+    if session_path.exists():
+        session = load_session(session_path)
+    else:
+        session = create_session_from_batch(base_config.exam_name, batch)
+    if hasattr(batch, "questions"):
+        if not sync_review_from_batch(session, batch):
+            raise RuntimeError("Session 中仍有题目未通过审核，禁止上传题库。")
+    else:
+        # Compatibility for older integrations whose test doubles expose only
+        # batch_id after the independent approval gate has passed.
+        update_status(session, "reviewed")
+    save_session(session, session_path)
 
     upload_config = UploadConfig(
         course_id=base_config.course_id,
@@ -184,6 +223,7 @@ def prepare_ai_exam_config(
         upload_state_path,
         commit=True,
         assume_yes=True,
+        session_path=session_path,
     )
 
     # 如果用户取消某一道题保存，或状态不是 uploaded，
@@ -198,9 +238,42 @@ def prepare_ai_exam_config(
             upload_config,
             batch,
             upload_state,
+            session_path=session_path,
         )
     )
+    # 上传和定位完成后，把题目映射回 Session。
+    # Session 是后续考试创建的唯一数据源。
 
+    session = load_session(session_path)
+    for index, q in enumerate(located_questions):
+        local_id = str(getattr(q, "local_id", "") or f"Q{index + 1:03d}")
+        if not any(item.local_id == local_id for item in session.questions):
+            add_question(session, ExamQuestionRecord.from_object(q, index=index))
+        record = find_question(session, local_id)
+        record.chapter = str(
+            getattr(q, "chapter_name", getattr(q, "chapter", record.chapter)) or record.chapter
+        )
+        record.question_number = getattr(
+            q, "question_number", getattr(q, "number", record.question_number)
+        )
+        record.keyword = str(getattr(q, "keyword", record.keyword) or record.keyword)
+        record.score = float(getattr(q, "score", record.score) or record.score)
+        record.upload_status = "uploaded"
+        record.platform_id = getattr(q, "platform_id", record.platform_id)
+        upload_records = getattr(upload_state, "questions", {}) or {}
+        upload_record = upload_records.get(local_id) if hasattr(upload_records, "get") else None
+        if upload_record is not None:
+            record.platform_id = getattr(upload_record, "platform_question_id", record.platform_id)
+
+    update_status(
+        session,
+        "uploaded",
+    )
+
+    save_session(
+        session,
+        session_path,
+    )
     final_path = (
         create_ai_exam_config(
             source_config_path,

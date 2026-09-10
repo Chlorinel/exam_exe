@@ -21,6 +21,7 @@ from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 
 from deepseek_question_generator import GeneratedQuestion, load_question_batch
+from exam_session import load_session, save_session, update_question_upload
 from question_review_gui_with_generation import question_batch_file_is_approved
 
 
@@ -483,12 +484,21 @@ def upload_batch(
     *,
     commit: bool = False,
     assume_yes: bool = False,
+    session_path: Path | None = None,
 ) -> UploadState:
     batch_path = batch_path.resolve()
     if not question_batch_file_is_approved(batch_path):
         raise RuntimeError("题目批次未全部通过人工审核，禁止进入平台填写或上传。")
     batch = load_question_batch(batch_path)
     state = load_upload_state(state_path, batch.batch_id)
+    session = None
+    if session_path is not None:
+        session_path = Path(session_path).resolve()
+        session = load_session(session_path)
+        if session.status != "reviewed":
+            raise RuntimeError(
+                f"Session 状态为 {session.status}，只有 reviewed 状态允许上传题库。"
+            )
     uploader = QuestionBankUploader(config)
     try:
         uploader.open_question_bank()
@@ -496,6 +506,14 @@ def upload_batch(
             fingerprint = question_fingerprint(question)
             record = state.questions.get(question.local_id)
             if record and record.fingerprint == fingerprint and record.status == "uploaded":
+                if session is not None:
+                    update_question_upload(
+                        session,
+                        question.local_id,
+                        upload_status="uploaded",
+                        platform_id=record.platform_question_id,
+                    )
+                    save_session(session, session_path)
                 print(f"[{index}/{len(batch.questions)}] 已上传，跳过：{question.local_id}")
                 continue
             if record and record.status in {"saving", "uncertain"}:
@@ -521,12 +539,18 @@ def upload_batch(
 
             state.questions[question.local_id] = UploadRecord(fingerprint=fingerprint, status="saving")
             save_upload_state(state_path, state)
+            if session is not None:
+                update_question_upload(session, question.local_id, upload_status="saving")
+                save_session(session, session_path)
             try:
                 platform_id = uploader.save_current_question()
             except Exception:
                 state.questions[question.local_id].status = "uncertain"
                 state.questions[question.local_id].updated_at = time.time()
                 save_upload_state(state_path, state)
+                if session is not None:
+                    update_question_upload(session, question.local_id, upload_status="uncertain")
+                    save_session(session, session_path)
                 raise
             state.questions[question.local_id] = UploadRecord(
                 fingerprint=fingerprint,
@@ -534,6 +558,14 @@ def upload_batch(
                 platform_question_id=platform_id,
             )
             save_upload_state(state_path, state)
+            if session is not None:
+                update_question_upload(
+                    session,
+                    question.local_id,
+                    upload_status="uploaded",
+                    platform_id=platform_id,
+                )
+                save_session(session, session_path)
             print(f"[{index}/{len(batch.questions)}] 保存成功：{question.local_id}", flush=True)
             if index < len(batch.questions):
                 uploader.open_question_bank()
@@ -551,6 +583,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--course-name", required=True)
     parser.add_argument("--profile-dir", type=Path, required=True)
     parser.add_argument("--state", type=Path, help="上传状态文件，默认与题目 JSON 放在一起")
+    parser.add_argument("--session", type=Path, help="同步更新的 ExamSession JSON")
     parser.add_argument("--edge-binary")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--commit", action="store_true", help="允许点击保存；仍会逐题要求终端确认")
@@ -574,7 +607,14 @@ def main(argv: list[str] | None = None) -> int:
         edge_binary=args.edge_binary,
         headless=args.headless,
     )
-    upload_batch(config, args.batch, state_path, commit=args.commit, assume_yes=args.yes)
+    upload_batch(
+        config,
+        args.batch,
+        state_path,
+        commit=args.commit,
+        assume_yes=args.yes,
+        session_path=args.session,
+    )
     return 0
 
 

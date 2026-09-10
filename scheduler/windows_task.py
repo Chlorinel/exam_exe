@@ -58,7 +58,12 @@ def task_exists(name: str) -> bool:
     return result.returncode == 0
 
 
-def _execution_parts(config_path: Path, state_path: Path, profile_dir: Path) -> tuple[str, str, Path]:
+def _execution_parts(
+    config_path: Path,
+    state_path: Path,
+    profile_dir: Path,
+    session_path: Path | None = None,
+) -> tuple[str, str, Path]:
     script_path = Path(__file__).resolve().parents[1] / "create_signal_exam.py"
     if getattr(sys, "frozen", False):
         command = str(Path(sys.executable).resolve())
@@ -75,6 +80,8 @@ def _execution_parts(config_path: Path, state_path: Path, profile_dir: Path) -> 
             "--headless",
         ]
     )
+    if session_path is not None:
+        arguments.extend(["--session", str(Path(session_path).resolve())])
     return command, subprocess.list2cmdline(arguments), script_path.parent.resolve()
 
 
@@ -126,6 +133,7 @@ def create_grade_release_task(
     release_at,
     *,
     profile_dir=None,
+    session_path=None,
 ) -> None:
     """Create or update the one-time grade-release task.
 
@@ -148,7 +156,10 @@ def create_grade_release_task(
     if profile_dir is None:
         profile_dir = Path(__file__).resolve().parents[2] / "work" / "edge-automation-profile"
     command, arguments, working_directory = _execution_parts(
-        config_path, state_path, Path(profile_dir)
+        config_path,
+        state_path,
+        Path(profile_dir),
+        Path(session_path) if session_path is not None else None,
     )
     xml = _task_xml(command, arguments, working_directory, release_at)
     temporary = None

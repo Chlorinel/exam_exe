@@ -23,6 +23,14 @@ from selenium.webdriver.edge.options import Options
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 
+from exam_session import (
+    load_exam_state,
+    load_session,
+    save_exam_state,
+    save_session,
+    update_status as update_session_status,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PROFILE_DIR = ROOT / "work" / "edge-automation-profile"
 
@@ -660,6 +668,82 @@ def load_config(path: Path, *, require_questions: bool = True) -> ExamConfig:
     if require_questions and not questions:
         raise ConfigError('选题明细尚未填写：请逐行填写章节、章内顺序号和题干关键词。')
     return ExamConfig(text(settings['考试名称']), text(settings['课程名称']), text(settings['课程ID']), text(settings['学期ID']), text(settings['参与班级']), start, end, release, method, tuple(questions))
+
+
+def _session_chapter_number(value) -> int:
+    raw = re.sub(r'\s+', '', str(value or ''))
+    match = re.search(r'第?(\d+)章', raw)
+    if match:
+        return positive_int(match.group(1), 'Session 章节')
+    for number in range(1, 100):
+        if raw.startswith(chapter_title(number)):
+            return number
+    raise ConfigError(f'Session 章节格式无效：{value}')
+
+
+def config_from_session(base: ExamConfig, session) -> ExamConfig:
+    questions = []
+    seen = set()
+    for index, record in enumerate(session.questions, start=1):
+        chapter = _session_chapter_number(getattr(record, 'chapter', ''))
+        number = getattr(record, 'question_number', None)
+        keyword = text(getattr(record, 'keyword', ''))
+        raw_score = getattr(record, 'score', 0)
+        if number is None or not keyword:
+            raise ConfigError(f'Session 第 {index} 题缺少题库编号或关键词。')
+        number = positive_int(number, f'Session 第 {index} 题章内编号')
+        key = chapter, number
+        if key in seen:
+            raise ConfigError(f'Session 包含重复题目：第 {chapter} 章第 {number} 题。')
+        seen.add(key)
+        try:
+            score = Decimal(str(raw_score))
+        except InvalidOperation as exc:
+            raise ConfigError(f'Session 第 {index} 题分值无效。') from exc
+        if not score.is_finite() or score <= 0:
+            raise ConfigError(f'Session 第 {index} 题分值必须大于 0。')
+        chapter_name = text(getattr(record, 'chapter', '')) or chapter_title(chapter)
+        questions.append(Question(chapter, chapter_name, number, keyword, score))
+    if not questions:
+        raise ConfigError('Session 中没有可用于创建考试的题目。')
+    return ExamConfig(
+        text(session.exam_name) or base.exam_name,
+        base.course_name,
+        base.course_id,
+        base.term_id,
+        base.class_code,
+        base.start,
+        base.end,
+        base.release_at,
+        base.release_method,
+        tuple(questions),
+    )
+
+
+def _set_session_status(session, session_path, status):
+    if session is None or session_path is None:
+        return
+    update_session_status(session, status)
+    save_session(session, session_path)
+
+
+def _exam_state_path(config_path: Path, session_path: Path | None) -> Path:
+    if session_path is not None:
+        return session_path.with_name('exam_state.json')
+    return config_path.resolve().parent / 'work' / 'exam_state.json'
+
+
+def _write_exam_state(path: Path, config: ExamConfig, state: dict, status: str) -> None:
+    exam_id = state.get('exam_id')
+    if not exam_id:
+        raise RuntimeError('运行记录中没有考试编号，无法保存 exam_state.json。')
+    save_exam_state(
+        path,
+        exam_id=str(exam_id),
+        status=status,
+        end_time=config.end,
+        answer_release_time=config.release_at,
+    )
 
 
 def release_gate(config: ExamConfig, *, now: datetime, actual_end: datetime) -> tuple[bool, str]:
@@ -1629,7 +1713,16 @@ def _scheduler_functions():
     return create_grade_release_task, delete_grade_release_task, task_exists, task_name
 
 
-def ensure_grade_release_task(config, state, config_path, state_path, profile_dir):
+def ensure_grade_release_task(
+    config,
+    state,
+    config_path,
+    state_path,
+    profile_dir,
+    *,
+    exam_state_path=None,
+    session_path=None,
+):
     if config.release_method != '定时脚本发布' or config.release_at is None:
         raise RuntimeError('当前配置不是定时脚本发布，不能创建成绩发布任务。')
     if not state.get('exam_id'):
@@ -1638,10 +1731,22 @@ def ensure_grade_release_task(config, state, config_path, state_path, profile_di
         raise RuntimeError('成绩已经发布，不再创建计划任务。')
     if state.get('status') != 'waiting':
         raise RuntimeError('尚未确认考试已经发布，不能创建成绩发布任务。')
+    exam_state_path = Path(exam_state_path or _exam_state_path(Path(config_path), session_path))
+    exam_state = load_exam_state(exam_state_path)
+    if exam_state.get('status') != 'published':
+        raise RuntimeError('exam_state.status 不是 published，不能创建计划任务。')
+    if str(exam_state.get('exam_id') or '') != str(state.get('exam_id') or ''):
+        raise RuntimeError('exam_state.json 与运行记录中的考试编号不一致。')
     if config.release_at <= datetime.now(BEIJING):
         raise RuntimeError('计划成绩发布时间已经到达；请直接运行 --release-grades。')
     create_task, _, exists, get_name = _scheduler_functions()
-    create_task(config_path, state_path, config.release_at, profile_dir=profile_dir)
+    create_task(
+        config_path,
+        state_path,
+        config.release_at,
+        profile_dir=profile_dir,
+        session_path=session_path,
+    )
     name = get_name(config, state)
     if not exists(name):
         raise RuntimeError('schtasks.exe 返回成功，但重新查询不到成绩发布任务。')
@@ -1778,11 +1883,20 @@ def release_grades_once(args, config, state, state_path):
 
 
 def run_configuration(args, *, publish_confirmer=None):
-    config = load_config(args.config)
+    session_path = getattr(args, 'session', None)
+    session_path = Path(session_path).resolve() if session_path else None
+    session = load_session(session_path) if session_path else None
+    config = load_config(args.config, require_questions=session is None)
+    if session is not None:
+        config = config_from_session(config, session)
+    exam_state_path = _exam_state_path(Path(args.config), session_path)
     print(config.summary())
-    if args.validate or args.dry_run or not (args.prepare or args.run or args.check or args.release_grades or args.schedule_grades):
+    if args.validate or args.dry_run or not (
+        args.prepare or args.run or args.check or args.release_grades or args.schedule_grades
+    ):
         print('配置校验通过。仅本地检查，没有打开浏览器、创建考试或发布成绩。')
         return 0
+
     state_path = args.state or args.config.with_suffix('.state.json')
     with ProcessLock(state_path.with_suffix('.lock')):
         state = load_state(state_path, config)
@@ -1791,6 +1905,7 @@ def run_configuration(args, *, publish_confirmer=None):
         if state.get('status') == 'grades_published':
             print('这场考试的成绩已发布，任务完成。')
             return 0
+
         driver = None
         try:
             if args.check:
@@ -1798,15 +1913,34 @@ def run_configuration(args, *, publish_confirmer=None):
                 done, message = check_or_release(driver, config, state, state_path, commit=False)
                 print(message)
                 return 0
+
             if args.schedule_grades:
                 driver = launch_for_config(args)
                 verify_published_exam(driver, config, state)
                 save_state(state_path, state)
+                _write_exam_state(exam_state_path, config, state, 'published')
+                _set_session_status(session, session_path, 'published')
                 driver.quit()
                 driver = None
-                ensure_grade_release_task(config, state, args.config, state_path, args.profile_dir)
+                ensure_grade_release_task(
+                    config,
+                    state,
+                    args.config,
+                    state_path,
+                    args.profile_dir,
+                    exam_state_path=exam_state_path,
+                    session_path=session_path,
+                )
+                _set_session_status(session, session_path, 'scheduled')
                 return 0
-            if state['status'] in ('new', 'draft_created') or (state['status'] == 'creating' and state.get('exam_id')):
+
+            if state['status'] in ('new', 'draft_created') or (
+                state['status'] == 'creating' and state.get('exam_id')
+            ):
+                if session is not None and session.status != 'uploaded':
+                    raise RuntimeError(
+                        f'Session 状态为 {session.status}，只有 uploaded 状态可以创建考试。'
+                    )
                 driver = launch_for_config(args)
                 prepare_exam(driver, config, state, state_path)
                 save_prepared(driver, config, state, state_path)
@@ -1816,10 +1950,18 @@ def run_configuration(args, *, publish_confirmer=None):
             elif state['status'] in ('saved', 'waiting', 'releasing_grades', 'publishing_exam'):
                 print(f'恢复考试 {state.get("exam_id")}，状态：{state["status"]}')
             else:
-                raise RuntimeError(f'上次停在 {state["status"]}，可能存在未完成草稿。请检查运行记录，避免重复创建。')
+                raise RuntimeError(
+                    f'上次停在 {state["status"]}，可能存在未完成草稿。'
+                    '请检查运行记录，避免重复创建。'
+                )
+
             if args.prepare:
+                if state.get('status') == 'saved':
+                    _write_exam_state(exam_state_path, config, state, 'exam_created')
+                    _set_session_status(session, session_path, 'exam_created')
                 print('考试草稿已保存，未发布考试，未启动成绩定时发布。')
                 return 0
+
             if state['status'] in ('saved', 'publishing_exam'):
                 if driver is None:
                     driver = launch_for_config(args)
@@ -1841,30 +1983,49 @@ def run_configuration(args, *, publish_confirmer=None):
                             raise RuntimeError('保存考试描述后无法重新打开草稿。')
                         verify_create_form(driver, config)
                     if state.get('status') == 'publishing_exam':
-                        # A fresh read has proved the prior publish attempt left a draft.
                         state['status'] = 'saved'
                     state.pop('last_error', None)
                     state.pop('error_trace', None)
                     state.pop('last_page', None)
                     save_state(state_path, state)
+                    _write_exam_state(exam_state_path, config, state, 'exam_created')
+                    _set_session_status(session, session_path, 'waiting_publish_confirm')
                     if not confirm_exam_publish(args, config, confirmer=publish_confirmer):
                         print('已取消发布，考试继续保留为草稿。')
                         return 0
                     publish_exam(driver, config, state, state_path)
+                    _write_exam_state(exam_state_path, config, state, 'published')
+                    _set_session_status(session, session_path, 'published')
                 else:
                     state['status'] = 'waiting'
                     state['detail_url'] = driver.current_url
                     save_state(state_path, state)
+                    _write_exam_state(exam_state_path, config, state, 'published')
+                    _set_session_status(session, session_path, 'published')
+
+            if state.get('status') == 'waiting':
+                _write_exam_state(exam_state_path, config, state, 'published')
             if config.release_method == '人工发布':
                 print('配置为人工发布成绩，脚本结束。')
                 return 0
             if driver:
                 driver.quit()
                 driver = None
-            ensure_grade_release_task(config, state, args.config, state_path, args.profile_dir)
+            ensure_grade_release_task(
+                config,
+                state,
+                args.config,
+                state_path,
+                args.profile_dir,
+                exam_state_path=exam_state_path,
+                session_path=session_path,
+            )
+            _set_session_status(session, session_path, 'scheduled')
             return 0
         except Exception as exc:
-            state['last_error'] = 'LOGIN_REQUIRED' if isinstance(exc, LoginRequired) else f'{type(exc).__name__}: {exc}'
+            state['last_error'] = (
+                'LOGIN_REQUIRED' if isinstance(exc, LoginRequired) else f'{type(exc).__name__}: {exc}'
+            )
             import traceback
             state['error_trace'] = traceback.format_exc()
             if driver:
@@ -1877,8 +2038,13 @@ def run_configuration(args, *, publish_confirmer=None):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description='读取 Excel 配置，创建考试并通过 Windows 计划任务在考后发布成绩')
+    parser = argparse.ArgumentParser(description='读取 ExamSession 或 Excel 配置，创建考试并安排考后发布')
     parser.add_argument('--config', type=Path, default=Path(__file__).with_name('考试配置表.xlsx'))
+    parser.add_argument(
+        '--session',
+        type=Path,
+        help='使用 ExamSession 中的本次题目映射；Excel 仍提供课程、班级和时间设置',
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--validate', action='store_true', help='只检查配置，不打开浏览器（默认）')
     group.add_argument('--dry-run', action='store_true', help='等同 --validate，绝不访问平台')

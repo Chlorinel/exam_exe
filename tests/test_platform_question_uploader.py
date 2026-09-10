@@ -23,6 +23,12 @@ from platform_question_uploader import (
     save_upload_state,
     upload_batch,
 )
+from exam_session import (
+    create_session_from_batch,
+    load_session,
+    save_session,
+    sync_review_from_batch,
+)
 
 
 def sample_question() -> GeneratedQuestion:
@@ -103,6 +109,10 @@ class UploadBatchTests(unittest.TestCase):
                 raw_response="",
             )
             save_question_batch(batch_path, batch)
+            session_path = root / "current_exam_session.json"
+            session = create_session_from_batch("上传测试", batch)
+            self.assertTrue(sync_review_from_batch(session, batch))
+            save_session(session, session_path)
 
             config = UploadConfig(
                 course_id="course-test",
@@ -143,6 +153,7 @@ class UploadBatchTests(unittest.TestCase):
                     state_path,
                     commit=True,
                     assume_yes=True,
+                    session_path=session_path,
                 )
 
             self.assertIsInstance(state, UploadState)
@@ -167,6 +178,10 @@ class UploadBatchTests(unittest.TestCase):
                 persisted.questions["q-1"].platform_question_id,
                 "remote-1",
             )
+            session = load_session(session_path)
+            self.assertEqual(session.status, "reviewed")
+            self.assertEqual(session.questions[0].upload_status, "uploaded")
+            self.assertEqual(session.questions[0].platform_id, "remote-1")
 
 
 if __name__ == "__main__":

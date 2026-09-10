@@ -36,6 +36,7 @@ class WindowsTaskTests(unittest.TestCase):
             Path("C:/absolute/config.xlsx"),
             Path("C:/absolute/config.state.json"),
             Path("C:/absolute/edge-profile"),
+            Path("C:/absolute/current_exam_session.json"),
         )
         root = ET.fromstring(windows_task._task_xml(command, arguments, working_directory, release_at))
         ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
@@ -44,6 +45,8 @@ class WindowsTaskTests(unittest.TestCase):
         self.assertIn("--release-grades", actual_arguments)
         self.assertIn("--headless", actual_arguments)
         self.assertIn(str(Path("C:/absolute/config.xlsx").resolve()), actual_arguments)
+        self.assertIn("--session", actual_arguments)
+        self.assertIn(str(Path("C:/absolute/current_exam_session.json").resolve()), actual_arguments)
         self.assertEqual(root.findtext("t:Triggers/t:TimeTrigger/t:StartBoundary", namespaces=ns), "2026-09-10T12:01:00")
 
     def test_same_recorded_task_and_time_is_noop(self):
@@ -106,6 +109,33 @@ class WindowsTaskTests(unittest.TestCase):
                     Path("unused.state.json"),
                 )
         launch.assert_not_called()
+
+    def test_scheduler_rejects_unpublished_exam_state(self):
+        config = type(
+            "Config",
+            (),
+            {
+                "release_method": "定时脚本发布",
+                "release_at": datetime.now(BEIJING) + timedelta(hours=1),
+            },
+        )()
+        state = {"exam_id": "123", "status": "waiting"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            exam_state = root / "exam_state.json"
+            exam_state.write_text(
+                json.dumps({"exam_id": "123", "status": "exam_created"}),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(RuntimeError, "不是 published"):
+                create_signal_exam.ensure_grade_release_task(
+                    config,
+                    state,
+                    root / "config.xlsx",
+                    root / "config.state.json",
+                    root / "profile",
+                    exam_state_path=exam_state,
+                )
 
     def test_run_publish_confirmation_requires_exact_yes(self):
         args = type("Args", (), {"publish_exam": False, "headless": False})()

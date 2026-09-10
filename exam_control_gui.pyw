@@ -30,12 +30,24 @@ from PySide6.QtWidgets import (
 
 from ai_exam_preparer import prepare_ai_exam_config
 from create_signal_exam import load_config, run_configuration
+from exam_session import load_session
 
 
 APP_ROOT = Path(__file__).resolve().parent
 DEFAULT_CONFIG = APP_ROOT / "考试配置表.xlsx"
 DEFAULT_PLATFORM_PROFILE = APP_ROOT / "work" / "edge-automation-profile"
 DEFAULT_DEEPSEEK_PROFILE = APP_ROOT / "work" / "edge-deepseek-profile"
+DEFAULT_SESSION = APP_ROOT / "work" / "current_exam_session.json"
+
+
+def session_action_permissions(session) -> tuple[bool, bool]:
+    """Return (can_create_exam, can_publish_exam), preserving Excel legacy mode."""
+    if session is None:
+        return True, True
+    return (
+        session.status == "uploaded",
+        session.status in {"exam_created", "waiting_publish_confirm"},
+    )
 
 
 class PublishConfirmationDialog(QDialog):
@@ -110,6 +122,7 @@ def build_backend_args(
     prepare: bool = False,
     run: bool = False,
     publish_exam: bool = False,
+    session_path: Path | None = None,
 ):
     """GUI 直接构造后端参数，不需要解析命令行。"""
     return SimpleNamespace(
@@ -122,6 +135,7 @@ def build_backend_args(
         release_grades=False,
         schedule_grades=False,
         publish_exam=publish_exam,
+        session=Path(session_path) if session_path is not None else None,
         state=None,
         profile_dir=Path(profile_dir),
         headless=False,
@@ -172,6 +186,10 @@ class ExamControlWindow(QMainWindow):
         deepseek_row.addWidget(self.deepseek_profile_edit, 1)
         layout.addLayout(deepseek_row)
 
+        self.session_label = QLabel()
+        self.session_label.setWordWrap(True)
+        layout.addWidget(self.session_label)
+
         actions = QHBoxLayout()
 
         self.validate_button = QPushButton("1. 检查配置")
@@ -196,6 +214,7 @@ class ExamControlWindow(QMainWindow):
         self.status_label.setWordWrap(True)
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self.status_label, 1)
+        self._refresh_session_status()
 
     def _config_path(self) -> Path:
         return Path(
@@ -212,6 +231,46 @@ class ExamControlWindow(QMainWindow):
             self.deepseek_profile_edit.text().strip()
         ).expanduser().resolve()
 
+    def _session_path(self) -> Path:
+        return DEFAULT_SESSION.resolve()
+
+    def _load_current_session(self):
+        path = self._session_path()
+        return load_session(path) if path.exists() else None
+
+    def _refresh_session_status(self) -> None:
+        try:
+            session = self._load_current_session()
+            if session is None:
+                self.session_label.setText(
+                    "当前考试：尚未创建 Session（可继续使用 Excel 兼容流程）"
+                )
+                can_create, can_publish = session_action_permissions(session)
+                self.prepare_button.setEnabled(can_create)
+                self.publish_button.setEnabled(can_publish)
+                return
+            approved = sum(q.review_status == "approved" for q in session.questions)
+            uploaded = sum(q.upload_status == "uploaded" for q in session.questions)
+            total = len(session.questions)
+            self.session_label.setText(
+                "当前考试：<b>{}</b><br>状态：{}　题目数量：{}　审核：{}/{}　上传：{}/{}".format(
+                    session.exam_name,
+                    session.status,
+                    total,
+                    approved,
+                    total,
+                    uploaded,
+                    total,
+                )
+            )
+            can_create, can_publish = session_action_permissions(session)
+            self.prepare_button.setEnabled(can_create)
+            self.publish_button.setEnabled(can_publish)
+        except Exception as exc:
+            self.session_label.setText(f"当前 Session 无法读取：{type(exc).__name__}: {exc}")
+            self.prepare_button.setEnabled(False)
+            self.publish_button.setEnabled(False)
+
     def _set_busy(self, busy: bool, message: str) -> None:
         for button in (
             self.validate_button,
@@ -220,6 +279,9 @@ class ExamControlWindow(QMainWindow):
             self.publish_button,
         ):
             button.setEnabled(not busy)
+
+        if not busy:
+            self._refresh_session_status()
 
         self.status_label.setText(message)
 
@@ -275,6 +337,7 @@ class ExamControlWindow(QMainWindow):
                 deepseek_profile_dir=self._deepseek_profile(),
                 platform_profile_dir=self._platform_profile(),
                 platform_headless=False,
+                session_path=self._session_path(),
             )
 
             if final_path is None:
@@ -320,6 +383,7 @@ class ExamControlWindow(QMainWindow):
                 self._config_path(),
                 self._platform_profile(),
                 prepare=True,
+                session_path=(self._session_path() if self._session_path().exists() else None),
             )
             run_configuration(args)
 
@@ -357,6 +421,7 @@ class ExamControlWindow(QMainWindow):
                 self._platform_profile(),
                 run=True,
                 publish_exam=True,
+                session_path=(self._session_path() if self._session_path().exists() else None),
             )
 
             run_configuration(

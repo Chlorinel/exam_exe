@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 from typing import Iterable
 
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -11,6 +12,13 @@ from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 
 from deepseek_question_generator import GeneratedQuestion, QuestionBatch
+from exam_session import (
+    all_uploaded as session_all_uploaded,
+    load_session,
+    save_session,
+    update_question_location,
+    update_status,
+)
 from platform_question_uploader import (
     MATH_PATTERN,
     QuestionBankUploader,
@@ -33,6 +41,7 @@ class LocatedQuestion:
     number: int
     keyword: str
     score: Decimal
+    platform_id: str | None = None
 
 
 def _visible(elements: Iterable[WebElement]) -> list[WebElement]:
@@ -460,6 +469,8 @@ def locate_uploaded_questions(
     config: UploadConfig,
     batch: QuestionBatch,
     upload_state: UploadState,
+    *,
+    session_path: Path | None = None,
 ) -> list[LocatedQuestion]:
     """
     上传完成后立即定位 AI 题。
@@ -535,12 +546,36 @@ def locate_uploaded_questions(
                     number=row_index + 1,
                     keyword=keyword,
                     score=question.score,
+                    platform_id=upload_state.questions[
+                        question.local_id
+                    ].platform_question_id,
                 )
 
     finally:
         uploader.close()
 
-    return [
+    located = [
         located_by_id[question.local_id]
         for question in batch.questions
     ]
+    if session_path is not None:
+        session_path = Path(session_path).resolve()
+        session = load_session(session_path)
+        if session.status != "reviewed":
+            raise RuntimeError(
+                f"Session 状态为 {session.status}，无法写入题库定位结果。"
+            )
+        for question in located:
+            update_question_location(
+                session,
+                question.local_id,
+                chapter=question.chapter_name,
+                question_number=question.number,
+                keyword=question.keyword,
+                platform_id=question.platform_id,
+            )
+        if not session_all_uploaded(session):
+            raise RuntimeError("Session 题目映射不完整，未进入 uploaded 状态。")
+        update_status(session, "uploaded")
+        save_session(session, session_path)
+    return located

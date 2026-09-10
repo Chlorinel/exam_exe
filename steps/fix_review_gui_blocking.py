@@ -6,8 +6,9 @@ import tempfile
 from pathlib import Path
 
 
-TARGET = Path("question_review_gui_with_generation.py")
-TEST = Path("test_review_gui_blocking.py")
+ROOT = Path(__file__).resolve().parents[1]
+TARGET = ROOT / "question_review_gui_with_generation.py"
+TEST = ROOT / "tests" / "test_review_gui_blocking.py"
 
 
 REVIEW_FUNCTION = """def review_question_batch(
@@ -393,7 +394,7 @@ def main() -> None:
     )
     print(
         "python -m unittest "
-        "test_review_gui_blocking.py -v"
+            "tests.test_review_gui_blocking -v"
     )
     print(
         "python -m unittest discover -v"

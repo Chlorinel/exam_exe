@@ -37,6 +37,7 @@ class AIExamPreparerTests(unittest.TestCase):
             course_id="course-1",
             term_id="term-1",
             course_name="信号与系统",
+            exam_name="测试考试",
         )
 
         self.batch = SimpleNamespace(
@@ -173,6 +174,16 @@ class AIExamPreparerTests(unittest.TestCase):
             upload_args.args[0],
             self.batch,
             self.upload_state,
+            session_path=(
+                self.root
+                / "work"
+                / "current_exam_session.json"
+            ),
+        )
+
+        self.assertEqual(
+            upload_args.kwargs["session_path"],
+            self.root / "work" / "current_exam_session.json",
         )
 
         writer_mock.assert_called_once()

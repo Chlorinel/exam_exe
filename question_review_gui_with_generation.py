@@ -101,6 +101,12 @@ from deepseek_question_generator import (
     save_question_batch,
     validate_question,
 )
+from exam_session import (
+    create_session_from_batch,
+    load_session,
+    save_session,
+    sync_review_from_batch,
+)
 
 
 # ============================================================================
@@ -143,6 +149,26 @@ def batch_is_fully_approved(batch: QuestionBatch) -> bool:
 
 def question_batch_file_is_approved(path: Path) -> bool:
     return batch_is_fully_approved(load_question_batch(Path(path)))
+
+
+def initialize_generated_session(
+    batch_path: Path,
+    session_path: Path,
+    exam_name: str,
+) -> None:
+    """Create the current Session immediately after DeepSeek writes the batch."""
+    batch = load_question_batch(Path(batch_path))
+    session = create_session_from_batch(exam_name, batch)
+    save_session(session, Path(session_path))
+
+
+def update_review_session(batch_path: Path, session_path: Path) -> bool:
+    """Persist per-question review results and advance only after full approval."""
+    batch = load_question_batch(Path(batch_path))
+    session = load_session(Path(session_path))
+    approved = sync_review_from_batch(session, batch)
+    save_session(session, Path(session_path))
+    return approved
 
 
 # ============================================================================
@@ -1777,6 +1803,8 @@ def review_question_batch(
     batch_path: Path,
     *,
     deepseek_config: DeepSeekWebConfig | None = None,
+    session_path: Path | None = None,
+    exam_name: str | None = None,
 ) -> bool:
     """
     打开审核 GUI，并同步等待审核窗口真正关闭。
@@ -1788,6 +1816,13 @@ def review_question_batch(
 
     if not batch_path.exists():
         raise FileNotFoundError(batch_path)
+
+    if session_path is not None:
+        session_path = Path(session_path).resolve()
+        if not session_path.exists():
+            if not exam_name:
+                raise RuntimeError("创建审核 Session 时缺少考试名称。")
+            initialize_generated_session(batch_path, session_path, exam_name)
 
     app = QApplication.instance()
 
@@ -1801,9 +1836,10 @@ def review_question_batch(
 
     _run_review_window_blocking(window)
 
-    return question_batch_file_is_approved(
-        batch_path
-    )
+    approved = question_batch_file_is_approved(batch_path)
+    if session_path is not None:
+        approved = update_review_session(batch_path, session_path)
+    return approved
 
 
 
@@ -1816,6 +1852,8 @@ def generate_and_review_questions(
     *,
     default_profile_dir: Path | None = None,
     default_output_path: Path | None = None,
+    session_path: Path | None = None,
+    exam_name: str | None = None,
 ) -> tuple[Path | None, bool]:
     """
     一体化同步流程：
@@ -1847,6 +1885,11 @@ def generate_and_review_questions(
     if batch_path is None:
         return None, False
 
+    if session_path is not None:
+        if not exam_name:
+            raise RuntimeError("创建 AI 出题 Session 时缺少考试名称。")
+        initialize_generated_session(batch_path, Path(session_path), exam_name)
+
     window = QuestionReviewWindow(
         batch_path,
         deepseek_config=ds_config,
@@ -1854,12 +1897,10 @@ def generate_and_review_questions(
 
     _run_review_window_blocking(window)
 
-    return (
-        batch_path,
-        question_batch_file_is_approved(
-            batch_path
-        ),
-    )
+    approved = question_batch_file_is_approved(batch_path)
+    if session_path is not None:
+        approved = update_review_session(batch_path, Path(session_path))
+    return batch_path, approved
 
 
 

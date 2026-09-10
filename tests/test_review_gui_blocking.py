@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Regression tests for the embedded review window event loop."""
+
 import tempfile
 import unittest
 from pathlib import Path

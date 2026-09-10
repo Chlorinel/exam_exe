@@ -155,6 +155,7 @@ exit /b %errorlevel%
 :VERIFY_PROJECT
 echo [检查] 验证主要程序可以加载
 "%TARGET_DIR%\.venv\Scripts\python.exe" -m py_compile ^
+    "%TARGET_DIR%\exam_session.py" ^
     "%TARGET_DIR%\create_signal_exam.py" ^
     "%TARGET_DIR%\deepseek_question_generator.py" ^
     "%TARGET_DIR%\platform_question_uploader.py"
