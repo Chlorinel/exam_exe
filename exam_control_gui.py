@@ -14,6 +14,7 @@ if sys.stderr is None:
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -123,6 +124,7 @@ def build_backend_args(
     run: bool = False,
     publish_exam: bool = False,
     session_path: Path | None = None,
+    headless: bool = False,
 ):
     """GUI 直接构造后端参数，不需要解析命令行。"""
     return SimpleNamespace(
@@ -138,7 +140,7 @@ def build_backend_args(
         session=Path(session_path) if session_path is not None else None,
         state=None,
         profile_dir=Path(profile_dir),
-        headless=False,
+        headless=bool(headless),
     )
 
 
@@ -147,6 +149,7 @@ def build_run_exam_args(
     profile_dir: Path,
     *,
     session_path: Path | None = None,
+    headless: bool = False,
 ):
     """GUI creation always enters the resumable run-and-confirm flow."""
     return build_backend_args(
@@ -155,6 +158,7 @@ def build_run_exam_args(
         run=True,
         publish_exam=True,
         session_path=session_path,
+        headless=headless,
     )
 
 
@@ -202,6 +206,15 @@ class ExamControlWindow(QMainWindow):
         deepseek_row.addWidget(self.deepseek_profile_edit, 1)
         layout.addLayout(deepseek_row)
 
+        self.background_checkbox = QCheckBox(
+            "后台运行网页（登录时自动弹出）"
+        )
+        self.background_checkbox.setToolTip(
+            "平时隐藏浏览器；首次登录、登录失效和发布前核对时会自动显示。"
+        )
+        self.background_checkbox.setChecked(False)
+        layout.addWidget(self.background_checkbox)
+
         self.session_label = QLabel()
         self.session_label.setWordWrap(True)
         layout.addWidget(self.session_label)
@@ -246,6 +259,9 @@ class ExamControlWindow(QMainWindow):
         return Path(
             self.deepseek_profile_edit.text().strip()
         ).expanduser().resolve()
+
+    def _background_browser(self) -> bool:
+        return self.background_checkbox.isChecked()
 
     def _session_path(self) -> Path:
         return DEFAULT_SESSION.resolve()
@@ -361,7 +377,8 @@ class ExamControlWindow(QMainWindow):
                 self._config_path(),
                 deepseek_profile_dir=self._deepseek_profile(),
                 platform_profile_dir=self._platform_profile(),
-                platform_headless=False,
+                deepseek_headless=self._background_browser(),
+                platform_headless=self._background_browser(),
                 session_path=self._session_path(),
             )
 
@@ -408,6 +425,7 @@ class ExamControlWindow(QMainWindow):
                 self._config_path(),
                 self._platform_profile(),
                 session_path=self._active_session_path(),
+                headless=self._background_browser(),
             )
             run_configuration(
                 args,
@@ -450,6 +468,7 @@ class ExamControlWindow(QMainWindow):
                 self._config_path(),
                 self._platform_profile(),
                 session_path=self._active_session_path(),
+                headless=self._background_browser(),
             )
 
             run_configuration(

@@ -598,6 +598,7 @@ class QuestionGenerationDialog(QDialog):
         *,
         default_profile_dir: Path | None = None,
         default_output_path: Path | None = None,
+        default_headless: bool = False,
     ):
         super().__init__(parent)
 
@@ -732,7 +733,7 @@ class QuestionGenerationDialog(QDialog):
         self.headless_checkbox = QCheckBox(
             "DeepSeek 使用无头模式（仅在登录状态已确认有效时使用）"
         )
-        self.headless_checkbox.setChecked(False)
+        self.headless_checkbox.setChecked(bool(default_headless))
         layout.addWidget(self.headless_checkbox)
 
         self.status_label = QLabel(
@@ -1855,6 +1856,7 @@ def generate_and_review_questions(
     default_output_path: Path | None = None,
     session_path: Path | None = None,
     exam_name: str | None = None,
+    default_headless: bool = False,
 ) -> tuple[Path | None, bool]:
     """
     一体化同步流程：
@@ -1875,6 +1877,7 @@ def generate_and_review_questions(
     dialog = QuestionGenerationDialog(
         default_profile_dir=default_profile_dir,
         default_output_path=default_output_path,
+        default_headless=default_headless,
     )
 
     if dialog.exec() != QDialog.DialogCode.Accepted:

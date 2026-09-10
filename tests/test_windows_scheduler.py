@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
@@ -16,6 +17,75 @@ BEIJING = timezone(timedelta(hours=8))
 
 
 class WindowsTaskTests(unittest.TestCase):
+    def test_headless_platform_login_reopens_visible_then_returns_to_background(self):
+        background = Mock()
+        visible = Mock()
+        resumed = Mock()
+        args = SimpleNamespace(
+            config=Path("config.xlsx"),
+            profile_dir=Path("profile"),
+            headless=True,
+        )
+        with patch.object(
+            create_signal_exam,
+            "launch_driver",
+            side_effect=[background, visible, resumed],
+        ) as launch, patch.object(
+            create_signal_exam,
+            "load_config",
+            return_value=SimpleNamespace(course_id="course-1"),
+        ), patch.object(
+            create_signal_exam,
+            "wait_until_ready",
+        ), patch.object(
+            create_signal_exam,
+            "is_login_page",
+            return_value=True,
+        ), patch.object(
+            create_signal_exam,
+            "open_activity_page",
+        ) as login:
+            result = create_signal_exam.launch_for_config(args)
+
+        self.assertIs(result, resumed)
+        self.assertEqual(
+            [call.args[1] for call in launch.call_args_list],
+            [True, False, True],
+        )
+        login.assert_called_once_with(visible, "course-1")
+        background.quit.assert_called_once_with()
+        visible.quit.assert_called_once_with()
+
+    def test_headless_publish_opens_visible_exam_page_for_review(self):
+        background = Mock()
+        visible = Mock(current_url="https://example.test/teach-exam/create/course/123")
+        args = SimpleNamespace(headless=True, profile_dir=Path("profile"))
+        config = SimpleNamespace()
+        state = {"exam_id": "123"}
+        with patch.object(
+            create_signal_exam,
+            "launch_driver",
+            return_value=visible,
+        ) as launch, patch.object(
+            create_signal_exam,
+            "open_existing",
+        ) as opened, patch.object(
+            create_signal_exam,
+            "verify_create_form",
+        ) as verified:
+            result = create_signal_exam.open_visible_publish_review(
+                background,
+                args,
+                config,
+                state,
+            )
+
+        self.assertIs(result, visible)
+        background.quit.assert_called_once_with()
+        launch.assert_called_once_with(Path("profile"), False)
+        opened.assert_called_once_with(visible, config, "123")
+        verified.assert_called_once_with(visible, config)
+
     def state_file(self, directory: str, *, scheduled=None) -> Path:
         path = Path(directory) / "exam.state.json"
         state = {"exam_id": "2097577330862120962"}

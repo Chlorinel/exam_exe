@@ -16,11 +16,13 @@ class FrontendArgsTests(unittest.TestCase):
             Path("config.xlsx"),
             Path("profile"),
             session_path=Path("work/current_exam_session.json"),
+            headless=True,
         )
         self.assertTrue(args.run)
         self.assertTrue(args.publish_exam)
         self.assertFalse(args.prepare)
         self.assertEqual(args.session, Path("work/current_exam_session.json"))
+        self.assertTrue(args.headless)
 
     def test_session_status_controls_create_and_publish_actions(self):
         session = type("Session", (), {"status": "uploaded"})()

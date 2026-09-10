@@ -40,6 +40,7 @@ def prepare_ai_exam_config(
     upload_state_path: Path | None = None,
     session_path: Path | None = None,
     platform_edge_binary: str | None = None,
+    deepseek_headless: bool = False,
     platform_headless: bool = False,
 ) -> Path | None:
     """
@@ -145,6 +146,7 @@ def prepare_ai_exam_config(
             ),
             session_path=session_path,
             exam_name=base_config.exam_name,
+            default_headless=deepseek_headless,
         )
     )
 

@@ -960,6 +960,7 @@ class DeepSeekWebGenerator:
         self.config = config or DeepSeekWebConfig()
         self.driver = driver
         self._owns_driver = driver is None
+        self._active_headless = bool(self.config.headless and driver is None)
         self.log = logger or (
             lambda message: print(message, flush=True)
         )
@@ -971,9 +972,12 @@ class DeepSeekWebGenerator:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def launch(self) -> webdriver.Edge:
+    def launch(self, *, headless: bool | None = None) -> webdriver.Edge:
         if self.driver is not None:
             return self.driver
+
+        if headless is None:
+            headless = self.config.headless
 
         profile_dir = Path(
             self.config.profile_dir
@@ -993,11 +997,12 @@ class DeepSeekWebGenerator:
         options.add_argument("--start-maximized")
         options.page_load_strategy = "normal"
 
-        if self.config.headless:
+        if headless:
             options.add_argument("--headless=new")
             options.add_argument("--window-size=1600,1200")
 
         self.driver = webdriver.Edge(options=options)
+        self._active_headless = bool(headless)
         return self.driver
 
     def close(self) -> None:
@@ -1006,6 +1011,21 @@ class DeepSeekWebGenerator:
                 self.driver.quit()
             finally:
                 self.driver = None
+
+    def _restart_browser(self, *, headless: bool) -> webdriver.Edge:
+        if not self._owns_driver:
+            raise RuntimeError("外部浏览器实例无法自动切换登录模式。")
+        self.close()
+        return self.launch(headless=headless)
+
+    def _wait_for_login(self, input_ready) -> None:
+        """Keep the visible browser alive until the user finishes login."""
+        while True:
+            try:
+                WebDriverWait(self.driver, 60).until(input_ready)
+                return
+            except TimeoutException:
+                self.log("仍在等待 DeepSeek 登录；完成后程序会自动继续。")
 
     def _find_first_visible(
         self,
@@ -1063,10 +1083,14 @@ class DeepSeekWebGenerator:
         except TimeoutException:
             pass
 
-        if self.config.headless:
-            raise RuntimeError(
-                "DeepSeek 登录已失效。"
-                "请先用可见浏览器运行并手动登录。"
+        return_to_background = self._active_headless
+        if return_to_background:
+            self.log("DeepSeek 登录已失效，正在弹出 Edge 登录窗口。")
+            driver = self._restart_browser(headless=False)
+            driver.get(self.config.chat_url)
+            WebDriverWait(driver, self.config.page_timeout).until(
+                lambda d: d.execute_script("return document.readyState")
+                in ("interactive", "complete")
             )
 
         self.log(
@@ -1074,15 +1098,17 @@ class DeepSeekWebGenerator:
             "DeepSeek 登录/人机验证。"
         )
 
-        try:
-            WebDriverWait(
-                self.driver,
-                self.config.login_timeout,
-            ).until(input_ready)
-        except TimeoutException as exc:
-            raise RuntimeError(
-                "等待 DeepSeek 登录超时。"
-            ) from exc
+        self._wait_for_login(input_ready)
+
+        if return_to_background:
+            self.log("DeepSeek 登录完成，正在恢复后台运行。")
+            driver = self._restart_browser(headless=True)
+            driver.get(self.config.chat_url)
+            WebDriverWait(driver, self.config.page_timeout).until(
+                lambda d: d.execute_script("return document.readyState")
+                in ("interactive", "complete")
+            )
+            WebDriverWait(driver, self.config.page_timeout).until(input_ready)
 
     def open_chat(self) -> None:
         driver = self.launch()

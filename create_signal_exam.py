@@ -206,6 +206,8 @@ def open_activity_page(driver: webdriver.Edge, course_id: str, timeout: int = 60
                 login_seen = True
             remaining = max(1, int(deadline - time.monotonic()))
             wait_for_login_if_needed(driver, timeout=remaining)
+            # Time spent by the user logging in must not consume the page-load budget.
+            deadline = time.monotonic() + timeout
             # SSO may return to a portal or course home instead of the original URL.
             if '/teaching-act' not in (driver.current_url or ''):
                 driver.get(target)
@@ -1673,7 +1675,38 @@ def check_or_release(driver, config, state, state_path, *, commit=False, before_
 def launch_for_config(args):
     driver = launch_driver(args.profile_dir, args.headless)
     driver._exam_headless = args.headless
+    if args.headless:
+        base_config = load_config(Path(args.config), require_questions=False)
+        target = activity_url(base_config.course_id)
+        driver.get(target)
+        wait_until_ready(driver, 40)
+        if is_login_page(driver):
+            print('教学平台登录已失效，正在弹出 Edge 登录窗口。', flush=True)
+            driver.quit()
+            driver = launch_driver(args.profile_dir, False)
+            driver._exam_headless = False
+            open_activity_page(driver, base_config.course_id)
+            print('教学平台登录完成，正在恢复后台运行。', flush=True)
+            driver.quit()
+            driver = launch_driver(args.profile_dir, True)
+            driver._exam_headless = True
     return driver
+
+
+def open_visible_publish_review(driver, args, config, state):
+    """Show the exact saved draft before the GUI asks for final publication."""
+    if not getattr(args, 'headless', False):
+        return driver
+    print('发布前正在弹出考试页面，供用户核对当前考试信息。', flush=True)
+    driver.quit()
+    visible_driver = launch_driver(args.profile_dir, False)
+    visible_driver._exam_headless = False
+    open_existing(visible_driver, config, state['exam_id'])
+    if '/create/' not in visible_driver.current_url:
+        visible_driver.quit()
+        raise RuntimeError('发布前无法打开考试编辑页供用户核对。')
+    verify_create_form(visible_driver, config)
+    return visible_driver
 
 
 def wait_for_login_if_needed(
@@ -1695,9 +1728,13 @@ def wait_for_login_if_needed(
         flush=True,
     )
 
-    WebDriverWait(driver, timeout).until(
-        lambda d: not is_login_page(d)
-    )
+    while is_login_page(driver):
+        try:
+            WebDriverWait(driver, 60).until(
+                lambda d: not is_login_page(d)
+            )
+        except TimeoutException:
+            print('仍在等待教学平台登录；完成后程序会自动继续。', flush=True)
     wait_until_ready(driver, 40)
 
 
@@ -1989,6 +2026,7 @@ def run_configuration(args, *, publish_confirmer=None):
                     state.pop('last_page', None)
                     save_state(state_path, state)
                     _write_exam_state(exam_state_path, config, state, 'exam_created')
+                    driver = open_visible_publish_review(driver, args, config, state)
                     _set_session_status(session, session_path, 'waiting_publish_confirm')
                     if not confirm_exam_publish(args, config, confirmer=publish_confirmer):
                         print('已取消发布，考试继续保留为草稿。')
@@ -2029,7 +2067,10 @@ def run_configuration(args, *, publish_confirmer=None):
             import traceback
             state['error_trace'] = traceback.format_exc()
             if driver:
-                state['last_page'] = driver.current_url.split('?')[0]
+                try:
+                    state['last_page'] = driver.current_url.split('?')[0]
+                except WebDriverException:
+                    pass
             save_state(state_path, state)
             raise
         finally:

@@ -204,25 +204,35 @@ class QuestionBankUploader:
         self.config = config
         self.driver = driver
         self._owns_driver = driver is None
+        self._active_headless = bool(config.headless and driver is None)
 
-    def launch(self) -> webdriver.Edge:
+    def launch(self, *, headless: bool | None = None) -> webdriver.Edge:
         if self.driver is not None:
             return self.driver
+        if headless is None:
+            headless = self.config.headless
         options = Options()
         if self.config.edge_binary:
             options.binary_location = self.config.edge_binary
         options.add_argument(f"--user-data-dir={self.config.profile_dir.resolve()}")
         options.add_argument("--profile-directory=Default")
         options.add_argument("--disable-blink-features=AutomationControlled")
-        if self.config.headless:
+        if headless:
             options.add_argument("--headless=new")
         self.driver = webdriver.Edge(options=options)
+        self._active_headless = bool(headless)
         return self.driver
 
     def close(self) -> None:
         if self.driver is not None and self._owns_driver:
             self.driver.quit()
             self.driver = None
+
+    def _restart_browser(self, *, headless: bool) -> webdriver.Edge:
+        if not self._owns_driver:
+            raise RuntimeError("外部浏览器实例无法自动切换登录模式。")
+        self.close()
+        return self.launch(headless=headless)
 
     @property
     def wait(self) -> WebDriverWait:
@@ -236,11 +246,27 @@ class QuestionBankUploader:
         return "login" in url or "登录" in body and "课程题库" not in body
 
     def open_question_bank(self) -> None:
+        target = self.config.question_bank_url()
         driver = self.launch()
-        driver.get(self.config.question_bank_url())
+        driver.get(target)
         if self._login_required():
+            return_to_background = self._active_headless
+            if return_to_background:
+                print("教学平台登录已失效，正在弹出 Edge 登录窗口。", flush=True)
+                driver = self._restart_browser(headless=False)
+                driver.get(target)
             print("页面正在等待登录，请在打开的 Edge 中完成登录；登录后脚本会自动继续。", flush=True)
-            WebDriverWait(driver, self.config.login_timeout).until(lambda _: not self._login_required())
+            while self._login_required():
+                try:
+                    WebDriverWait(driver, 60).until(lambda _: not self._login_required())
+                except TimeoutException:
+                    print("仍在等待教学平台登录；完成后程序会自动继续。", flush=True)
+            if target not in (driver.current_url or ""):
+                driver.get(target)
+            if return_to_background:
+                print("教学平台登录完成，正在恢复后台运行。", flush=True)
+                driver = self._restart_browser(headless=True)
+                driver.get(target)
         self.wait.until(lambda d: _exact_visible_text(d, ".base-button-component,button", "新增试题"))
 
     def open_manual_create(self) -> None:
