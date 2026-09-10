@@ -10,6 +10,7 @@ No automatic grading, account scraping, or credential export is performed.
 """
 
 import argparse
+import subprocess
 import sys
 import time
 
@@ -2075,6 +2076,67 @@ def run_configuration(args, *, publish_confirmer=None):
                 driver.quit()
 
 
+def manual_release_command(args, failure_message: str = '') -> list[str]:
+    """Build a safe argv list for the visible manual fallback terminal."""
+    script_path = Path(__file__).resolve()
+    if getattr(sys, 'frozen', False):
+        command = [str(Path(sys.executable).resolve())]
+    else:
+        command = [str(Path(sys.executable).resolve()), str(script_path)]
+    command.extend(
+        [
+            '--config', str(Path(args.config).resolve()),
+            '--profile-dir', str(Path(args.profile_dir).resolve()),
+            '--manual-release-prompt',
+        ]
+    )
+    if getattr(args, 'state', None):
+        command.extend(['--state', str(Path(args.state).resolve())])
+    if getattr(args, 'session', None):
+        command.extend(['--session', str(Path(args.session).resolve())])
+    if getattr(args, 'headless', False):
+        command.append('--headless')
+    if failure_message:
+        command.extend(['--failure-message', failure_message[:1000]])
+    return command
+
+
+def launch_manual_release_terminal(args, failure_message: str = ''):
+    """Open a new console that waits for an explicit `yes` before retrying."""
+    if sys.platform != 'win32':
+        raise RuntimeError('手动发布确认终端只能在 Windows 中打开。')
+    return subprocess.Popen(
+        manual_release_command(args, failure_message),
+        cwd=str(Path(__file__).resolve().parent),
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
+    )
+
+
+def run_manual_release_prompt(args) -> int:
+    print('=' * 56)
+    print('定时发布答案失败')
+    if args.failure_message:
+        print(f'失败原因：{args.failure_message}')
+    print('只有输入 yes 才会重新运行成绩、试卷及答案发布脚本。')
+    answer = input('请输入 yes 后按 Enter；输入其他内容取消：').strip().casefold()
+    if answer != 'yes':
+        print('已取消手动发布。')
+        return 1
+
+    args.manual_release_prompt = True
+    args.release_grades = True
+    try:
+        result = run_configuration(args)
+    except (ConfigError, RuntimeError, ValueError, TimeoutException, WebDriverException) as exc:
+        print(f'手动发布答案失败：{type(exc).__name__}: {exc}', file=sys.stderr)
+        input('按 Enter 关闭此窗口。')
+        return 1
+
+    print('手动发布成绩、试卷及答案已完成。')
+    input('按 Enter 关闭此窗口。')
+    return int(result or 0)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description='读取 ExamSession 或 Excel 配置，创建考试并安排考后发布')
     parser.add_argument('--config', type=Path, default=Path(__file__).with_name('考试配置表.xlsx'))
@@ -2091,10 +2153,12 @@ def parse_args():
     group.add_argument('--check', action='store_true', help='只读检查已存在考试的截止时间和发布状态')
     group.add_argument('--release-grades', action='store_true', help='计划任务入口：仅对已发布考试执行一次成绩发布')
     group.add_argument('--schedule-grades', action='store_true', help='为已发布考试创建或修复 Windows 成绩发布任务')
+    group.add_argument('--manual-release-prompt', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--publish-exam', action='store_true', help='与 --run 配合，允许把考试草稿发布给配置班级')
     parser.add_argument('--state', type=Path, help='运行记录文件，默认与配置表同名的 .state.json')
     parser.add_argument('--profile-dir', type=Path, default=DEFAULT_PROFILE_DIR)
     parser.add_argument('--headless', action='store_true', help='无窗口运行；首次登录请不要使用')
+    parser.add_argument('--failure-message', default='', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.publish_exam and not args.run:
         parser.error('--publish-exam 必须配合 --run')
@@ -2102,13 +2166,24 @@ def parse_args():
 
 
 def main():
+    args = parse_args()
     try:
-        return run_configuration(parse_args())
+        if args.manual_release_prompt:
+            return run_manual_release_prompt(args)
+        return run_configuration(args)
     except KeyboardInterrupt:
         print('已停止。运行记录已保留，可用相同配置和 --run 恢复。')
         return 130
     except (ConfigError, RuntimeError, ValueError, TimeoutException, WebDriverException) as exc:
-        print(f'脚本停止：{type(exc).__name__}: {exc}', file=sys.stderr)
+        if args.release_grades:
+            print(f'定时发布答案失败：{type(exc).__name__}: {exc}', file=sys.stderr)
+            try:
+                launch_manual_release_terminal(args, f'{type(exc).__name__}: {exc}')
+                print('已打开手动发布终端；输入 yes 后才会重新运行发布脚本。')
+            except (OSError, RuntimeError) as launch_exc:
+                print(f'无法打开手动发布终端：{launch_exc}', file=sys.stderr)
+        else:
+            print(f'脚本停止：{type(exc).__name__}: {exc}', file=sys.stderr)
         return 1
 
 

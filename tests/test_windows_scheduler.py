@@ -18,6 +18,86 @@ BEIJING = timezone(timedelta(hours=8))
 
 
 class WindowsTaskTests(unittest.TestCase):
+    def test_manual_terminal_command_waits_before_release_entry(self):
+        args = SimpleNamespace(
+            config=Path("config.xlsx"),
+            profile_dir=Path("profile"),
+            state=Path("exam.state.json"),
+            session=Path("work/current_exam_session.json"),
+            headless=True,
+        )
+        command = create_signal_exam.manual_release_command(
+            args,
+            "network unavailable",
+        )
+
+        self.assertIn("--manual-release-prompt", command)
+        self.assertNotIn("--release-grades", command)
+        self.assertIn("--headless", command)
+        self.assertIn(str(Path("exam.state.json").resolve()), command)
+        self.assertIn(
+            str(Path("work/current_exam_session.json").resolve()),
+            command,
+        )
+
+    def test_scheduled_release_failure_opens_manual_confirmation_terminal(self):
+        args = SimpleNamespace(
+            release_grades=True,
+            manual_release_prompt=False,
+        )
+        failure = RuntimeError("network unavailable")
+        with patch.object(
+            create_signal_exam,
+            "parse_args",
+            return_value=args,
+        ), patch.object(
+            create_signal_exam,
+            "run_configuration",
+            side_effect=failure,
+        ), patch.object(
+            create_signal_exam,
+            "launch_manual_release_terminal",
+        ) as launch:
+            result = create_signal_exam.main()
+
+        self.assertEqual(result, 1)
+        launch.assert_called_once_with(args, "RuntimeError: network unavailable")
+
+    def test_manual_terminal_requires_yes_before_running_release(self):
+        args = SimpleNamespace(
+            failure_message="network unavailable",
+            manual_release_prompt=True,
+            release_grades=False,
+        )
+        with patch(
+            "builtins.input",
+            side_effect=["yes", ""],
+        ), patch.object(
+            create_signal_exam,
+            "run_configuration",
+            return_value=0,
+        ) as run:
+            result = create_signal_exam.run_manual_release_prompt(args)
+
+        self.assertEqual(result, 0)
+        self.assertTrue(args.release_grades)
+        run.assert_called_once_with(args)
+
+    def test_manual_terminal_cancels_without_exact_yes(self):
+        args = SimpleNamespace(
+            failure_message="network unavailable",
+            manual_release_prompt=True,
+            release_grades=False,
+        )
+        with patch("builtins.input", return_value="no"), patch.object(
+            create_signal_exam,
+            "run_configuration",
+        ) as run:
+            result = create_signal_exam.run_manual_release_prompt(args)
+
+        self.assertEqual(result, 1)
+        run.assert_not_called()
+
     def test_schtasks_timeout_fails_instead_of_hanging(self):
         expired = subprocess.TimeoutExpired("schtasks.exe", 30)
         with patch.object(
