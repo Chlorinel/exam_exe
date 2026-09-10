@@ -614,7 +614,7 @@ class QuestionGenerationDialog(QDialog):
         intro = QLabel(
             "填写出题要求后，程序会通过 DeepSeek 网页生成题目。"
             "生成完成后会自动进入人工审核；"
-            "AI 生成的题目不会自动上传题库。"
+            "全部审核通过后会自动逐题上传课程题库。"
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -1518,12 +1518,13 @@ class QuestionReviewWindow(QMainWindow):
         self.load_question(self.current_index)
 
         if batch_is_fully_approved(self.batch):
-            QMessageBox.information(
-                self,
-                "审核完成",
-                "所有题目均已人工审核通过，"
-                "现在可以进入题库上传阶段。",
+            self.statusBar().showMessage(
+                "全部审核通过，正在进入题库上传阶段。",
+                2000,
             )
+            # The caller continues directly into one-by-one batch upload.
+            # No extra approval dialog or manual window close is required.
+            self.close()
         else:
             self.statusBar().showMessage(
                 f"{q.local_id} 已通过。",

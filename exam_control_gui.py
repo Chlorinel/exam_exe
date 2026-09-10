@@ -142,6 +142,22 @@ def build_backend_args(
     )
 
 
+def build_run_exam_args(
+    config_path: Path,
+    profile_dir: Path,
+    *,
+    session_path: Path | None = None,
+):
+    """GUI creation always enters the resumable run-and-confirm flow."""
+    return build_backend_args(
+        config_path,
+        profile_dir,
+        run=True,
+        publish_exam=True,
+        session_path=session_path,
+    )
+
+
 class ExamControlWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -200,11 +216,11 @@ class ExamControlWindow(QMainWindow):
         self.ai_button.clicked.connect(self.ai_prepare)
         actions.addWidget(self.ai_button)
 
-        self.prepare_button = QPushButton("3. 创建考试草稿")
-        self.prepare_button.clicked.connect(self.prepare_exam)
+        self.prepare_button = QPushButton("3. 创建并运行考试")
+        self.prepare_button.clicked.connect(self.run_exam)
         actions.addWidget(self.prepare_button)
 
-        self.publish_button = QPushButton("4. 发布考试")
+        self.publish_button = QPushButton("4. 继续发布草稿")
         self.publish_button.clicked.connect(self.publish_exam)
         actions.addWidget(self.publish_button)
 
@@ -235,8 +251,16 @@ class ExamControlWindow(QMainWindow):
         return DEFAULT_SESSION.resolve()
 
     def _load_current_session(self):
+        path = self._active_session_path()
+        return load_session(path) if path is not None else None
+
+    def _active_session_path(self) -> Path | None:
         path = self._session_path()
-        return load_session(path) if path.exists() else None
+        if not path.exists():
+            return None
+        session = load_session(path)
+        config = load_config(self._config_path(), require_questions=False)
+        return path if session.exam_name == config.exam_name else None
 
     def _refresh_session_status(self) -> None:
         try:
@@ -301,6 +325,7 @@ class ExamControlWindow(QMainWindow):
         )
         if filename:
             self.config_edit.setText(filename)
+            self._refresh_session_status()
 
     def validate_config(self) -> None:
         try:
@@ -357,7 +382,7 @@ class ExamControlWindow(QMainWindow):
                 ),
             )
             self.status_label.setText(
-                "AI准备完成，可以继续点击“创建考试草稿”。"
+                "AI准备完成，可以继续点击“创建并运行考试”。"
             )
 
         except Exception as exc:
@@ -372,35 +397,40 @@ class ExamControlWindow(QMainWindow):
         finally:
             self._set_busy(False, self.status_label.text())
 
-    def prepare_exam(self) -> None:
+    def run_exam(self) -> None:
         self._set_busy(
             True,
-            "正在创建/更新考试草稿。"
+            "正在创建并核对考试。"
             "若 Edge 出现登录页面，请直接完成登录，程序会自动继续。",
         )
         try:
-            args = build_backend_args(
+            args = build_run_exam_args(
                 self._config_path(),
                 self._platform_profile(),
-                prepare=True,
-                session_path=(self._session_path() if self._session_path().exists() else None),
+                session_path=self._active_session_path(),
             )
-            run_configuration(args)
+            run_configuration(
+                args,
+                publish_confirmer=self._confirm_publish,
+            )
 
             QMessageBox.information(
                 self,
-                "草稿完成",
-                "考试草稿已创建/更新。本步骤不会发布考试。",
+                "运行完成",
+                "考试创建流程已结束。"
+                "如果取消了发布确认，草稿会保留，可稍后继续发布。",
             )
-            self.status_label.setText("考试草稿已准备完成。")
+            self.status_label.setText(
+                "考试创建流程已结束。请查看上方 Session 状态。"
+            )
 
         except Exception as exc:
             QMessageBox.critical(
                 self,
-                "创建草稿失败",
+                "创建考试失败",
                 f"{type(exc).__name__}: {exc}",
             )
-            self.status_label.setText("创建草稿失败。")
+            self.status_label.setText("创建考试失败。")
         finally:
             self._set_busy(False, self.status_label.text())
 
@@ -416,12 +446,10 @@ class ExamControlWindow(QMainWindow):
             "真正发布前会弹出人工确认窗口。",
         )
         try:
-            args = build_backend_args(
+            args = build_run_exam_args(
                 self._config_path(),
                 self._platform_profile(),
-                run=True,
-                publish_exam=True,
-                session_path=(self._session_path() if self._session_path().exists() else None),
+                session_path=self._active_session_path(),
             )
 
             run_configuration(

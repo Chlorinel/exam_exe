@@ -11,6 +11,25 @@ import question_review_gui_with_generation as review
 
 
 class GenerateAndReviewBlockingTests(unittest.TestCase):
+    def test_last_approval_closes_review_window_without_another_dialog(self):
+        question = Mock()
+        question.local_id = "Q001"
+        question.to_dict.return_value = {"local_id": "Q001"}
+        window = Mock()
+        window.batch.questions = [question]
+        window.current_index = 0
+        window._question_from_form.return_value = question
+
+        with patch.object(review, "validate_question", return_value=[]), patch.object(
+            review,
+            "batch_is_fully_approved",
+            return_value=True,
+        ), patch.object(review.QMessageBox, "information") as information:
+            review.QuestionReviewWindow.approve_current(window)
+
+        information.assert_not_called()
+        window.close.assert_called_once_with()
+
     def test_existing_qapplication_waits_for_review_before_returning(self):
         with tempfile.TemporaryDirectory() as directory:
             batch_path = Path(directory) / "questions.json"

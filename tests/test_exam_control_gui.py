@@ -3,10 +3,25 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from exam_control_gui import build_backend_args, session_action_permissions
+from exam_control_gui import (
+    build_backend_args,
+    build_run_exam_args,
+    session_action_permissions,
+)
 
 
 class FrontendArgsTests(unittest.TestCase):
+    def test_default_create_action_uses_run_mode(self):
+        args = build_run_exam_args(
+            Path("config.xlsx"),
+            Path("profile"),
+            session_path=Path("work/current_exam_session.json"),
+        )
+        self.assertTrue(args.run)
+        self.assertTrue(args.publish_exam)
+        self.assertFalse(args.prepare)
+        self.assertEqual(args.session, Path("work/current_exam_session.json"))
+
     def test_session_status_controls_create_and_publish_actions(self):
         session = type("Session", (), {"status": "uploaded"})()
         self.assertEqual(session_action_permissions(session), (True, False))
