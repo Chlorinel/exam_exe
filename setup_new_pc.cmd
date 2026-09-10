@@ -4,7 +4,7 @@ chcp 65001 >nul
 title 考试自动化系统 - 新电脑环境配置
 
 set "REPO_URL=https://github.com/Chlorinel/exam_exe.git"
-set "RUNTIME_BRANCH=codex/user-runtime"
+set "RUNTIME_BRANCH=user_runtime"
 for %%I in ("%~dp0.") do set "SCRIPT_DIR=%%~fI"
 set "TARGET_DIR=%SCRIPT_DIR%\examworker"
 
