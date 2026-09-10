@@ -126,6 +126,11 @@ def batch_is_fully_approved(batch: QuestionBatch) -> bool:
     if not batch.questions:
         return False
 
+    # 删除或其他审核操作不能让实际题数低于/高于最初的出题要求。
+    # 只有题目数量完整时，整批题目才允许进入上传阶段。
+    if len(batch.questions) != batch.spec.count:
+        return False
+
     for q in batch.questions:
         errors = validate_question(q)
         if errors:

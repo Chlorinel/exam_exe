@@ -33,7 +33,8 @@ def sample_question(*, status="approved", stem="题干 \\(x(t)\\)"):
     )
 
 
-def sample_batch(questions):
+def sample_batch(questions, *, expected_count=None):
+    questions = list(questions)
     return QuestionBatch(
         batch_id="batch-1",
         provider="deepseek-web",
@@ -42,10 +43,14 @@ def sample_batch(questions):
             course_name="信号与系统",
             chapter="第二章",
             knowledge_point="卷积积分",
-            count=len(questions),
+            count=(
+                len(questions)
+                if expected_count is None
+                else expected_count
+            ),
             score=Decimal("5.5"),
         ),
-        questions=list(questions),
+        questions=questions,
         raw_response="",
     )
 
@@ -70,6 +75,21 @@ class QuestionContractTests(unittest.TestCase):
             invalid.answer = "E"
             save_question_batch(path, sample_batch([invalid]))
             self.assertFalse(question_batch_file_is_approved(path))
+
+    def test_gate_rejects_incomplete_question_count(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "questions.json"
+            batch = sample_batch(
+                [sample_question()],
+                expected_count=2,
+            )
+            save_question_batch(path, batch)
+
+            # 题目本身合法且 approved，但数量少于 spec.count，
+            # 整批仍然必须拒绝上传。
+            self.assertFalse(
+                question_batch_file_is_approved(path)
+            )
 
     def test_duplicate_stems_are_detected(self):
         questions = [sample_question(), sample_question(stem="  题干   \\(x(t)\\)  ")]
