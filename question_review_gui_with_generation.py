@@ -63,7 +63,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -1750,20 +1750,39 @@ class QuestionReviewWindow(QMainWindow):
 # 主程序调用接口
 # ============================================================================
 
+def _run_review_window_blocking(
+    window: QuestionReviewWindow,
+) -> None:
+    """
+    为 QMainWindow 提供类似 QDialog.exec() 的同步等待。
+
+    这里只创建局部 QEventLoop，不创建第二个 QApplication。
+    因此既可独立运行，也可嵌入 exam_control_gui.pyw。
+    """
+    loop = QEventLoop()
+
+    window.setAttribute(
+        Qt.WidgetAttribute.WA_DeleteOnClose,
+        True,
+    )
+    window.destroyed.connect(
+        loop.quit
+    )
+
+    window.show()
+    loop.exec()
+
+
 def review_question_batch(
     batch_path: Path,
     *,
     deepseek_config: DeepSeekWebConfig | None = None,
 ) -> bool:
     """
-    打开审核 GUI，关闭窗口后返回是否全部审核通过。
+    打开审核 GUI，并同步等待审核窗口真正关闭。
 
-    主程序示例：
-
-        if review_question_batch(path, deepseek_config=cfg):
-            upload_questions(...)
-        else:
-            print("仍有题目未审核")
+    无论 QApplication 是本函数创建的，还是外层考试控制台
+    已经创建的，都必须等人工审核窗口关闭后再返回结果。
     """
     batch_path = Path(batch_path).resolve()
 
@@ -1771,7 +1790,6 @@ def review_question_batch(
         raise FileNotFoundError(batch_path)
 
     app = QApplication.instance()
-    owns_app = app is None
 
     if app is None:
         app = QApplication(sys.argv)
@@ -1780,18 +1798,14 @@ def review_question_batch(
         batch_path,
         deepseek_config=deepseek_config,
     )
-    window.show()
 
-    if owns_app:
-        app.exec()
-    else:
-        # 已有 Qt 主程序时，不再创建第二个 event loop。
-        # 调用方应管理窗口生命周期。
-        return False
+    _run_review_window_blocking(window)
 
     return question_batch_file_is_approved(
         batch_path
     )
+
+
 
 
 # ============================================================================
@@ -1804,19 +1818,17 @@ def generate_and_review_questions(
     default_output_path: Path | None = None,
 ) -> tuple[Path | None, bool]:
     """
-    一体化流程：
+    一体化同步流程：
         GUI 填写出题要求
         -> DeepSeek 生成
         -> 人工审核
+        -> 审核窗口关闭
+        -> 返回最终审核结果
 
-    返回：
-        (生成文件路径, 是否全部审核通过)
-
-    用户取消时返回：
-        (None, False)
+    外层即使已经存在 QApplication，也绝不能在审核窗口
+    仍打开时提前返回 False。
     """
     app = QApplication.instance()
-    owns_app = app is None
 
     if app is None:
         app = QApplication(sys.argv)
@@ -1839,19 +1851,17 @@ def generate_and_review_questions(
         batch_path,
         deepseek_config=ds_config,
     )
-    window.show()
 
-    if owns_app:
-        app.exec()
-        return (
-            batch_path,
-            question_batch_file_is_approved(
-                batch_path
-            ),
-        )
+    _run_review_window_blocking(window)
 
-    # 已存在 QApplication 时，由外层主程序管理事件循环。
-    return batch_path, False
+    return (
+        batch_path,
+        question_batch_file_is_approved(
+            batch_path
+        ),
+    )
+
+
 
 
 # ============================================================================
