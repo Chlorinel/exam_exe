@@ -5,4 +5,5 @@ __pycache__/
 *.deleted-exam-backup-*.json
 work/
 .pytest_cache/
+.venv/
 

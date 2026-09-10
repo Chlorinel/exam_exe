@@ -131,13 +131,31 @@ def is_login_page(driver: webdriver.Edge) -> bool:
     return any(x in url for x in url_markers) or any(x.lower() in text for x in text_markers)
 
 
-def wait_for_login_if_needed(driver: webdriver.Edge, timeout: int = 300) -> None:
+def wait_for_login_if_needed(
+    driver: webdriver.Edge,
+    timeout: int = 300,
+) -> None:
+    """
+    若当前是登录页，只等待用户在 Edge 中完成登录。
+
+    不依赖终端按 Enter；适用于 GUI / pythonw.exe。
+    """
     if not is_login_page(driver):
         return
-    print("当前 Edge 配置需要登录。请在脚本打开的 Edge 窗口中完成登录。")
-    input("登录完成、回到智课空间后按 Enter 继续：")
-    WebDriverWait(driver, timeout).until(lambda d: not is_login_page(d))
+
+    print(
+        "当前 Edge 配置需要登录。"
+        "请在打开的 Edge 窗口中完成登录；"
+        "登录成功后脚本会自动继续。",
+        flush=True,
+    )
+
+    WebDriverWait(driver, timeout).until(
+        lambda d: not is_login_page(d)
+    )
     wait_until_ready(driver, 40)
+
+
 
 
 def activity_url(course_id: str) -> str:
@@ -1297,41 +1315,232 @@ def grade_snapshot(driver, config):
 
 
 def publication_counts(driver):
-    """Scan all pages by status column; no personally identifying data is returned."""
-    previous = exact_text_elements(driver, '上一页', 'button')
-    while previous and previous[0].is_enabled():
-        previous[0].click()
+    """Scan all result pages without relying on visually hidden table headers."""
+
+    def page_button(selector):
+        return next((element for element in visible(driver, selector)), None)
+
+    def enabled(element):
+        if element is None:
+            return False
+        classes = element.get_attribute('class') or ''
+        return (
+            element.is_enabled()
+            and element.get_attribute('disabled') is None
+            and 'is-disabled' not in classes
+        )
+
+    WebDriverWait(driver, 60).until(
+        lambda d: visible(d, '.el-table__body-wrapper tbody tr')
+    )
+    previous = page_button('button.btn-prev')
+    while enabled(previous):
+        previous.click()
         time.sleep(0.5)
-        previous = exact_text_elements(driver, '上一页', 'button')
+        previous = page_button('button.btn-prev')
     total, published, unpublished = 0, 0, 0
     page = 0
     while True:
         page += 1
         if page > 200:
             raise RuntimeError('成绩分页超过检查上限。')
-        headers = visible(driver, 'thead th')
-        index = next((i for i, e in enumerate(headers) if norm(e.text) == '批阅状态'), None)
-        if index is None:
-            raise RuntimeError('找不到批阅状态列。')
-        rows = visible(driver, 'tbody tr')
-        states = []
-        for row in rows:
-            cells = row.find_elements(By.CSS_SELECTOR, 'td')
-            if len(cells) <= index:
-                raise RuntimeError('成绩表格结构发生变化。')
-            status = norm(cells[index].text)
-            states.append(status)
-        if not states:
+        rows = visible(driver, '.el-table__body-wrapper tbody tr')
+        row_texts = [norm(row.text) for row in rows]
+        if not row_texts:
             raise RuntimeError('成绩列表为空，不能确认发布结果。')
-        total += len(states)
-        published += states.count('已发布')
-        unpublished += len(states) - states.count('已发布')
-        nxt = exact_text_elements(driver, '下一页', 'button')
-        if not nxt or not nxt[0].is_enabled():
+        if any('未发布' not in text and '已发布' not in text for text in row_texts):
+            raise RuntimeError('成绩行缺少可识别的发布状态。')
+        total += len(row_texts)
+        unpublished += sum('未发布' in text for text in row_texts)
+        published += sum('未发布' not in text and '已发布' in text for text in row_texts)
+        nxt = page_button('button.btn-next')
+        if not enabled(nxt):
             break
-        nxt[0].click()
-        time.sleep(0.8)
+        first_row = row_texts[0]
+        nxt.click()
+        WebDriverWait(driver, 30).until(
+            lambda d: (
+                visible(d, '.el-table__body-wrapper tbody tr')
+                and norm(visible(d, '.el-table__body-wrapper tbody tr')[0].text) != first_row
+            )
+        )
+        time.sleep(0.4)
     return {'total': total, 'published': published, 'unpublished': unpublished}
+
+
+def publish_exam_answers(driver, config, state, state_path):
+    """Publish the paper and answers to every configured class after grades."""
+    open_existing(driver, config, state['exam_id'])
+    WebDriverWait(driver, 60).until(
+        lambda d: exact_text_elements(d, '发布成绩', 'button')
+    )
+    more = WebDriverWait(driver, 30).until(
+        lambda d: next((element for element in visible(d, '.handle-more')), False)
+    )
+    more.click()
+    menu_item = WebDriverWait(driver, 15).until(
+        lambda d: next(
+            (
+                element
+                for element in visible(d, '[role="menuitem"]')
+                if norm(element.text) == '公布试卷及答案'
+            ),
+            False,
+        )
+    )
+    menu_item.click()
+    dialog = WebDriverWait(driver, 15).until(
+        lambda d: next(
+            (
+                element
+                for element in visible(d, '[role="dialog"]')
+                if '公布试卷及答案' in norm(element.text)
+            ),
+            False,
+        )
+    )
+    class_names = WebDriverWait(driver, 15).until(
+        lambda d: [
+            norm(element.text)
+            for element in d.find_elements(
+                By.CSS_SELECTOR,
+                '.dialog-polymas-exam-publish li.clearfloat p[classid]',
+            )
+        ]
+        or False
+    )
+    if class_names != [config.class_code]:
+        raise RuntimeError('公布答案弹窗中的班级与配置不一致。')
+    all_checkbox = WebDriverWait(driver, 15).until(
+        lambda d: next(
+            iter(
+                d.find_elements(
+                    By.CSS_SELECTOR,
+                    '.dialog-polymas-exam-publish .all input.el-checkbox__original',
+                )
+            ),
+            False,
+        )
+    )
+    switches = WebDriverWait(driver, 15).until(
+        lambda d: d.find_elements(
+            By.CSS_SELECTOR,
+            '.dialog-polymas-exam-publish input[role="switch"]',
+        )
+        or False
+    )
+    if len(switches) != 1:
+        raise RuntimeError('公布答案弹窗中的班级开关数量异常。')
+
+    if all_checkbox.is_selected() and all(
+        element.get_attribute('aria-checked') == 'true'
+        for element in switches
+    ):
+        cancel = next(
+            element
+            for element in visible(dialog, 'button')
+            if norm(element.text) == '取消'
+        )
+        cancel.click()
+        state['answers_published'] = True
+        state['answers_published_at'] = datetime.now(BEIJING).isoformat()
+        save_state(state_path, state)
+        return '试卷及答案已经全部公布，无需重复操作。'
+
+    all_checkbox.find_element(By.XPATH, 'ancestor::label[1]').click()
+    WebDriverWait(driver, 15).until(
+        lambda d: all_checkbox.is_selected()
+        and all(element.get_attribute('aria-checked') == 'true' for element in switches)
+    )
+    state['answers_publication_status'] = 'publishing'
+    save_state(state_path, state)
+    confirm = next(
+        (
+            element
+            for element in visible(dialog, 'button')
+            if norm(element.text) == '确定'
+        ),
+        None,
+    )
+    if confirm is None:
+        raise RuntimeError('公布答案弹窗中找不到确定按钮。')
+    confirm.click()
+    WebDriverWait(driver, 30).until(
+        lambda d: not any(
+            '公布试卷及答案' in norm(element.text)
+            for element in visible(d, '[role="dialog"]')
+        )
+    )
+
+    time.sleep(2)
+    driver.refresh()
+    time.sleep(2)
+    WebDriverWait(driver, 60).until(
+        lambda d: exact_text_elements(d, '发布成绩', 'button')
+    )
+    more = WebDriverWait(driver, 30).until(
+        lambda d: next((element for element in visible(d, '.handle-more')), False)
+    )
+    more.click()
+    menu_item = WebDriverWait(driver, 15).until(
+        lambda d: next(
+            (
+                element
+                for element in visible(d, '[role="menuitem"]')
+                if norm(element.text) == '公布试卷及答案'
+            ),
+            False,
+        )
+    )
+    menu_item.click()
+    verify_dialog = WebDriverWait(driver, 15).until(
+        lambda d: next(
+            (
+                element
+                for element in visible(d, '[role="dialog"]')
+                if '公布试卷及答案' in norm(element.text)
+            ),
+            False,
+        )
+    )
+    verify_checkbox = WebDriverWait(driver, 15).until(
+        lambda d: next(
+            iter(
+                d.find_elements(
+                    By.CSS_SELECTOR,
+                    '.dialog-polymas-exam-publish .all input.el-checkbox__original',
+                )
+            ),
+            False,
+        )
+    )
+    verify_switches = WebDriverWait(driver, 15).until(
+        lambda d: d.find_elements(
+            By.CSS_SELECTOR,
+            '.dialog-polymas-exam-publish input[role="switch"]',
+        )
+        or False
+    )
+    if (
+        not verify_checkbox.is_selected()
+        or len(verify_switches) != 1
+        or any(
+            element.get_attribute('aria-checked') != 'true'
+            for element in verify_switches
+        )
+    ):
+        raise RuntimeError('公布答案后回读失败：全部公布或班级开关未保持开启。')
+    cancel = next(
+        element
+        for element in visible(verify_dialog, 'button')
+        if norm(element.text) == '取消'
+    )
+    cancel.click()
+    state['answers_published'] = True
+    state['answers_published_at'] = datetime.now(BEIJING).isoformat()
+    state.pop('answers_publication_status', None)
+    save_state(state_path, state)
+    return '试卷及答案已全部公布。'
 
 
 def check_or_release(driver, config, state, state_path, *, commit=False, before_release=None):
@@ -1383,14 +1592,31 @@ def launch_for_config(args):
     return driver
 
 
-def wait_for_login_if_needed(driver, timeout=300):
+def wait_for_login_if_needed(
+    driver: webdriver.Edge,
+    timeout: int = 300,
+) -> None:
+    """
+    若当前是登录页，只等待用户在 Edge 中完成登录。
+
+    不依赖终端按 Enter；适用于 GUI / pythonw.exe。
+    """
     if not is_login_page(driver):
         return
-    if getattr(driver, '_exam_unattended', False) or getattr(driver, '_exam_headless', False):
-        raise LoginRequired('独立浏览器登录已失效。请去掉 --headless 完成登录后，用原运行记录恢复。')
-    print('请在脚本打开的 Edge 中完成登录；脚本最多等待 5 分钟并自动继续。', flush=True)
-    WebDriverWait(driver, timeout).until(lambda d: not is_login_page(d))
-    wait_until_ready(driver)
+
+    print(
+        "当前 Edge 配置需要登录。"
+        "请在打开的 Edge 窗口中完成登录；"
+        "登录成功后脚本会自动继续。",
+        flush=True,
+    )
+
+    WebDriverWait(driver, timeout).until(
+        lambda d: not is_login_page(d)
+    )
+    wait_until_ready(driver, 40)
+
+
 
 
 def _scheduler_functions():
@@ -1451,35 +1677,63 @@ def verify_published_exam(driver, config, state):
     state['status'] = 'waiting'
 
 
-def confirm_exam_publish(args, config):
-    """Ask once in an interactive terminal before publishing a prepared draft."""
-    if args.publish_exam:
-        return True
-    if args.headless or not sys.stdin.isatty():
-        raise RuntimeError('当前环境无法进行终端确认。请在交互终端运行 --run，或明确使用 --run --publish-exam。')
-    print('\n考试草稿已准备完成，请人工核对后决定是否发布：')
-    print(f'  考试：{config.exam_name}')
-    print(f'  班级：{config.class_code}')
-    print(f'  时间：{config.start:%Y-%m-%d %H:%M} 至 {config.end:%Y-%m-%d %H:%M}（北京时间）')
-    print(f'  题目：{len(config.questions)} 道')
-    answer = input('确认立即发布考试？输入 YES 发布，其他输入保留草稿并退出：').strip()
-    return answer == 'YES'
+def confirm_exam_publish(
+    args,
+    config,
+    *,
+    confirmer=None,
+) -> bool:
+    """
+    考试发布的最终人工门禁。
 
+    GUI 模式：
+        必须由 confirmer(config) 明确返回 True。
 
-def confirm_grade_release_for_test(args, config):
-    """Temporary test gate placed immediately before the grade-release click."""
+    CLI 备用模式：
+        必须是交互终端，并由人工输入 YES。
+
+    headless / 无人值守环境：
+        禁止发布考试。
+
+    注意：
+    --publish-exam 只是 CLI 入口参数，不承担“人工认证”职责；
+    真正的安全门始终是这里的人工作为确认。
+    """
+    if confirmer is not None:
+        return bool(confirmer(config))
+
     if args.headless or not sys.stdin.isatty():
         raise RuntimeError(
-            '已到达成绩发布按钮，但当前处于测试确认阶段；计划任务不会点击。'
-            '请在交互终端运行 --release-grades，并在提示时确认。'
+            "当前环境无法进行终端确认。"
+            "考试发布必须由人工确认；"
+            "headless/无人值守环境禁止发布考试。"
         )
-    print('\n成绩发布条件已经通过，脚本即将点击“发布成绩”：')
-    print(f'  考试：{config.exam_name}')
-    print(f'  班级：{config.class_code}')
-    print(f'  计划发布时间：{config.release_at:%Y-%m-%d %H:%M}（北京时间）')
-    answer = input('确认现在点击“发布成绩”？输入 YES 发布，其他输入停止：').strip()
-    if answer != 'YES':
-        raise RuntimeError('用户未确认发布成绩；脚本已停在点击之前。')
+
+    print(
+        "\n考试草稿已准备完成，"
+        "请人工核对后决定是否发布："
+    )
+    print(f"  考试：{config.exam_name}")
+    print(f"  班级：{config.class_code}")
+    print(
+        f"  时间："
+        f"{config.start:%Y-%m-%d %H:%M} 至 "
+        f"{config.end:%Y-%m-%d %H:%M}"
+        "（北京时间）"
+    )
+    print(f"  题目：{len(config.questions)} 道")
+
+    answer = input(
+        "确认立即发布考试？"
+        "输入 YES 发布，"
+        "其他输入保留草稿并退出："
+    ).strip()
+
+    return answer == "YES"
+
+
+
+
 
 
 def release_grades_once(args, config, state, state_path):
@@ -1487,36 +1741,43 @@ def release_grades_once(args, config, state, state_path):
         raise RuntimeError('运行记录中没有考试编号，拒绝发布成绩。')
     if config.release_method != '定时脚本发布' or config.release_at is None:
         raise RuntimeError('当前配置不是定时脚本发布，拒绝发布成绩。')
-    if state.get('status') == 'grades_published':
+    if state.get('status') == 'grades_published' and state.get('answers_published'):
         delete_scheduled_grade_release(config, state, state_path)
-        print('成绩已经发布；残留的 Windows 计划任务已清理。')
+        print('成绩、试卷及答案已经发布；残留的 Windows 计划任务已清理。')
         return 0
     if datetime.now(BEIJING) < config.release_at:
         raise RuntimeError(f'尚未到计划成绩发布时间 {config.release_at:%Y-%m-%d %H:%M}。')
-    if state.get('status') not in ('waiting', 'releasing_grades'):
+    if state.get('status') not in ('waiting', 'releasing_grades', 'grades_published'):
         raise RuntimeError(f'当前状态为 {state.get("status")}，不能执行独立成绩发布。')
     driver = launch_for_config(args)
     driver._exam_unattended = bool(args.headless)
     try:
-        done, message = check_or_release(
+        if state.get('status') != 'grades_published':
+            done, message = check_or_release(
+                driver,
+                config,
+                state,
+                state_path,
+                commit=True,
+            )
+            print(message)
+            if not done:
+                raise RuntimeError('本次未发布成绩；计划任务保留，请核对运行记录。')
+        answer_message = publish_exam_answers(
             driver,
             config,
             state,
             state_path,
-            commit=True,
-            before_release=lambda: confirm_grade_release_for_test(args, config),
         )
-        print(message)
+        print(answer_message)
     finally:
         driver.quit()
-    if not done:
-        raise RuntimeError('本次未发布成绩；计划任务保留，请核对运行记录。')
     delete_scheduled_grade_release(config, state, state_path)
-    print('成绩发布成功，Windows 计划任务已删除。')
+    print('成绩、试卷及答案发布成功，Windows 计划任务已删除。')
     return 0
 
 
-def run_configuration(args):
+def run_configuration(args, *, publish_confirmer=None):
     config = load_config(args.config)
     print(config.summary())
     if args.validate or args.dry_run or not (args.prepare or args.run or args.check or args.release_grades or args.schedule_grades):
@@ -1586,7 +1847,7 @@ def run_configuration(args):
                     state.pop('error_trace', None)
                     state.pop('last_page', None)
                     save_state(state_path, state)
-                    if not confirm_exam_publish(args, config):
+                    if not confirm_exam_publish(args, config, confirmer=publish_confirmer):
                         print('已取消发布，考试继续保留为草稿。')
                         return 0
                     publish_exam(driver, config, state, state_path)

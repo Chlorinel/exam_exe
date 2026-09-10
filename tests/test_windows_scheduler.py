@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import xml.etree.ElementTree as ET
 
 import create_signal_exam
@@ -134,30 +134,41 @@ class WindowsTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "无法进行终端确认"):
             create_signal_exam.confirm_exam_publish(args, object())
 
-    def test_headless_grade_release_stops_before_click_during_test(self):
+    def test_scheduled_release_publishes_grades_and_answers_without_prompt(self):
         args = type("Args", (), {"headless": True})()
-        with self.assertRaisesRegex(RuntimeError, "计划任务不会点击"):
-            create_signal_exam.confirm_grade_release_for_test(args, object())
-
-    def test_interactive_grade_release_requires_exact_yes(self):
-        args = type("Args", (), {"headless": False})()
         config = type(
             "Config",
             (),
             {
-                "exam_name": "测试考试",
-                "class_code": "1001",
-                "release_at": datetime(2026, 9, 10, 12, 1, tzinfo=BEIJING),
+                "release_method": "定时脚本发布",
+                "release_at": datetime.now(BEIJING) - timedelta(minutes=1),
             },
         )()
-        with patch.object(create_signal_exam.sys.stdin, "isatty", return_value=True), patch(
-            "builtins.input", return_value="yes"
-        ), self.assertRaisesRegex(RuntimeError, "用户未确认"):
-            create_signal_exam.confirm_grade_release_for_test(args, config)
-        with patch.object(create_signal_exam.sys.stdin, "isatty", return_value=True), patch(
-            "builtins.input", return_value="YES"
+        state = {"exam_id": "123", "status": "waiting"}
+        driver = Mock()
+        with patch.object(create_signal_exam, "launch_for_config", return_value=driver), patch.object(
+            create_signal_exam,
+            "check_or_release",
+            return_value=(True, "成绩已发布"),
+        ) as release, patch.object(
+            create_signal_exam,
+            "publish_exam_answers",
+            return_value="答案已公布",
+        ) as answers, patch.object(
+            create_signal_exam,
+            "delete_scheduled_grade_release",
         ):
-            self.assertIsNone(create_signal_exam.confirm_grade_release_for_test(args, config))
+            result = create_signal_exam.release_grades_once(
+                args,
+                config,
+                state,
+                Path("unused.state.json"),
+            )
+        self.assertEqual(result, 0)
+        self.assertTrue(release.call_args.kwargs["commit"])
+        self.assertNotIn("before_release", release.call_args.kwargs)
+        answers.assert_called_once()
+        driver.quit.assert_called_once()
 
     def test_activity_page_waits_for_login_then_continues(self):
         target = create_signal_exam.activity_url("course1")

@@ -483,7 +483,7 @@ def upload_batch(
     *,
     commit: bool = False,
     assume_yes: bool = False,
-) -> None:
+) -> UploadState:
     batch_path = batch_path.resolve()
     if not question_batch_file_is_approved(batch_path):
         raise RuntimeError("题目批次未全部通过人工审核，禁止进入平台填写或上传。")
@@ -512,12 +512,12 @@ def upload_batch(
 
             if not commit:
                 input("当前为核对模式，未点击保存。请在浏览器核对，按 Enter 关闭程序：")
-                return
+                return state
             if not assume_yes:
                 answer = input("确认保存这一题？输入 YES 后回车：").strip()
                 if answer != "YES":
                     print("已停止，当前题未保存。")
-                    return
+                    return state
 
             state.questions[question.local_id] = UploadRecord(fingerprint=fingerprint, status="saving")
             save_upload_state(state_path, state)
@@ -539,6 +539,8 @@ def upload_batch(
                 uploader.open_question_bank()
     finally:
         uploader.close()
+
+    return state
 
 
 def build_parser() -> argparse.ArgumentParser:
