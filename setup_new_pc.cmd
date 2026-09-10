@@ -4,6 +4,7 @@ chcp 65001 >nul
 title 考试自动化系统 - 新电脑环境配置
 
 set "REPO_URL=https://github.com/Chlorinel/exam_exe.git"
+set "RUNTIME_BRANCH=codex/user-runtime"
 for %%I in ("%~dp0.") do set "SCRIPT_DIR=%%~fI"
 set "TARGET_DIR=%SCRIPT_DIR%\examworker"
 
@@ -30,6 +31,9 @@ call :ENSURE_EDGE
 if errorlevel 1 goto FAILED
 
 call :GET_SOURCE
+if errorlevel 1 goto FAILED
+
+call :PREPARE_USER_FILES
 if errorlevel 1 goto FAILED
 
 call :SETUP_VENV
@@ -126,7 +130,9 @@ exit /b 0
 :GET_SOURCE
 if exist "%TARGET_DIR%\.git" (
     echo [更新] 正在从 GitHub 获取最新代码
-    git -C "%TARGET_DIR%" pull --ff-only
+    git -C "%TARGET_DIR%" fetch --depth 1 origin "%RUNTIME_BRANCH%:refs/remotes/origin/%RUNTIME_BRANCH%"
+    if errorlevel 1 exit /b 1
+    git -C "%TARGET_DIR%" checkout -B "%RUNTIME_BRANCH%" "origin/%RUNTIME_BRANCH%"
     exit /b %errorlevel%
 )
 if exist "%TARGET_DIR%" (
@@ -138,7 +144,16 @@ if exist "%TARGET_DIR%" (
     )
 )
 echo [下载] 正在从 GitHub 克隆项目
-git clone "%REPO_URL%" "%TARGET_DIR%"
+git clone --depth 1 --single-branch --branch "%RUNTIME_BRANCH%" "%REPO_URL%" "%TARGET_DIR%"
+exit /b %errorlevel%
+
+:PREPARE_USER_FILES
+if not exist "%TARGET_DIR%\考试配置表.xlsx" (
+    echo [配置] 创建用户考试配置表
+    copy /Y "%TARGET_DIR%\考试配置模板.xlsx" "%TARGET_DIR%\考试配置表.xlsx" >nul
+    if errorlevel 1 exit /b 1
+)
+if not exist "%TARGET_DIR%\work" mkdir "%TARGET_DIR%\work"
 exit /b %errorlevel%
 
 :SETUP_VENV
