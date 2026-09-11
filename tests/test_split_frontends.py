@@ -45,6 +45,19 @@ class SplitFrontendTests(unittest.TestCase):
         self.assertEqual(specs[1].question_type, "calculation")
         dialog.close()
 
+    def test_last_group_can_be_submitted_without_adding_another_row(self) -> None:
+        dialog = QuestionGenerationDialog()
+        dialog.chapter_edit.setText("第一章")
+        dialog.knowledge_edit.setText("复指数信号")
+        dialog._add_current_spec()
+        dialog.chapter_edit.setText("第三章")
+        dialog.knowledge_edit.setText("傅里叶级数")
+
+        specs = dialog._build_specs()
+
+        self.assertEqual([item.chapter for item in specs], ["第一章", "第三章"])
+        dialog.close()
+
 
 if __name__ == "__main__":
     unittest.main()

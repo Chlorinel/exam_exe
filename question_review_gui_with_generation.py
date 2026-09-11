@@ -876,7 +876,17 @@ class QuestionGenerationDialog(QDialog):
     def _build_specs(self) -> list[QuestionSpec]:
         # Single-group use stays one click: if no row was explicitly added,
         # the values currently shown in the form are used directly.
-        return list(self.specs) if self.specs else [self._build_spec()]
+        if not self.specs:
+            return [self._build_spec()]
+        if (
+            self.chapter_edit.text().strip()
+            or self.knowledge_edit.text().strip()
+            or self.requirements_edit.toPlainText().strip()
+        ):
+            # The last group may be left in the form and submitted directly;
+            # earlier groups remain visible in the list for review.
+            return [*self.specs, self._build_spec()]
+        return list(self.specs)
 
     def _build_spec(self) -> QuestionSpec:
         course = self.course_edit.text().strip()
