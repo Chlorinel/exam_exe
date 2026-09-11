@@ -18,7 +18,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support.ui import WebDriverWait
+from responsive_wait import WebDriverWait
 
 from deepseek_question_generator import GeneratedQuestion, load_question_batch
 from exam_session import load_session, save_session, update_question_upload
@@ -199,6 +199,24 @@ def _exact_visible_text(driver: webdriver.Edge, selector: str, text: str) -> Web
     return False
 
 
+def click_safely(driver: webdriver.Edge, element: WebElement) -> None:
+    """Click a control even when a transient page layer intercepts WebDriver."""
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block:'center',inline:'nearest'});",
+        element,
+    )
+    try:
+        WebDriverWait(driver, 5).until(
+            lambda _: element.is_displayed() and element.is_enabled()
+        )
+        element.click()
+    except WebDriverException:
+        # The platform keeps some transparent/popover layers mounted after
+        # their animation. A DOM click is stable across window sizes and does
+        # not depend on screen coordinates.
+        driver.execute_script("arguments[0].click();", element)
+
+
 class QuestionBankUploader:
     def __init__(self, config: UploadConfig, *, driver: webdriver.Edge | None = None):
         self.config = config
@@ -217,6 +235,7 @@ class QuestionBankUploader:
         options.add_argument(f"--user-data-dir={self.config.profile_dir.resolve()}")
         options.add_argument("--profile-directory=Default")
         options.add_argument("--disable-blink-features=AutomationControlled")
+        options.page_load_strategy = "eager"
         if headless:
             options.add_argument("--headless=new")
         self.driver = webdriver.Edge(options=options)
@@ -283,7 +302,7 @@ class QuestionBankUploader:
     def open_manual_create(self) -> None:
         assert self.driver is not None
         add = self.wait.until(lambda d: _exact_visible_text(d, ".base-button-component,button", "新增试题"))
-        add.click()
+        click_safely(self.driver, add)
         manual = self.wait.until(
             lambda d: _exact_visible_text(
                 d,
@@ -291,7 +310,7 @@ class QuestionBankUploader:
                 "手动新增",
             )
         )
-        self.driver.execute_script("arguments[0].click();", manual)
+        click_safely(self.driver, manual)
         self.wait.until(lambda d: len(_visible(d.find_elements(By.CSS_SELECTOR, ".tiptap.ProseMirror"))) >= 2)
         self.wait.until(lambda d: _exact_visible_text(d, "button,.base-button-component", "保存"))
 
@@ -303,9 +322,9 @@ class QuestionBankUploader:
         select = self.wait.until(
             lambda d: next(iter(_visible(d.find_elements(By.CSS_SELECTOR, ".question-type-select"))), False)
         )
-        select.click()
+        click_safely(self.driver, select)
         option = self.wait.until(lambda d: _exact_visible_text(d, ".el-select-dropdown__item,[role='option']", label))
-        self.driver.execute_script("arguments[0].scrollIntoView({block:'nearest'}); arguments[0].click();", option)
+        click_safely(self.driver, option)
         self.wait.until(lambda _: label in normalize_text(select.text))
         return label
 
@@ -316,7 +335,7 @@ class QuestionBankUploader:
     def fill_rich_content(self, component: WebElement, value: str) -> None:
         assert self.driver is not None
         editor = component.find_element(By.CSS_SELECTOR, ".tiptap.ProseMirror")
-        editor.click()
+        click_safely(self.driver, editor)
         editor.send_keys(Keys.CONTROL, "a")
         editor.send_keys(Keys.BACKSPACE)
         for segment in parse_markdown_latex(value):
@@ -324,7 +343,10 @@ class QuestionBankUploader:
                 if segment.value:
                     editor.send_keys(segment.value)
                 continue
-            component.find_element(By.CSS_SELECTOR, '[data-menu-type="math"]').click()
+            click_safely(
+                self.driver,
+                component.find_element(By.CSS_SELECTOR, '[data-menu-type="math"]'),
+            )
             dialog = self.wait.until(
                 lambda d: next(
                     (x for x in _visible(d.find_elements(By.CSS_SELECTOR, ".el-dialog")) if "数学公式编辑器" in x.text),
@@ -343,10 +365,10 @@ class QuestionBankUploader:
                 x for x in _visible(dialog.find_elements(By.CSS_SELECTOR, "button,.base-button-component"))
                 if normalize_text(x.text) == "确认"
             )
-            confirm.click()
+            click_safely(self.driver, confirm)
             self.wait.until(lambda d: dialog not in _visible(d.find_elements(By.CSS_SELECTOR, ".el-dialog")))
             editor = component.find_element(By.CSS_SELECTOR, ".tiptap.ProseMirror")
-            editor.click()
+            click_safely(self.driver, editor)
 
     def _choose_answers(self, label: str, answer: str) -> None:
         assert self.driver is not None
@@ -388,11 +410,11 @@ class QuestionBankUploader:
         for select in candidates:
             current = normalize_text(select.text)
             if current in set(DIFFICULTY_LABELS.values()):
-                select.click()
+                click_safely(self.driver, select)
                 option = self.wait.until(
                     lambda d: _exact_visible_text(d, ".el-select-dropdown__item,[role='option']", label)
                 )
-                self.driver.execute_script("arguments[0].click();", option)
+                click_safely(self.driver, option)
                 return
 
     def fill_question(self, question: GeneratedQuestion) -> None:
@@ -425,7 +447,7 @@ class QuestionBankUploader:
         modify = self.wait.until(
             lambda d: next(iter(_visible(d.find_elements(By.CSS_SELECTOR, ".save-region .modify-icon"))), False)
         )
-        modify.click()
+        click_safely(self.driver, modify)
         dialog = self.wait.until(
             lambda d: next(
                 (x for x in _visible(d.find_elements(By.CSS_SELECTOR, ".el-dialog")) if "保存至" in x.text),
@@ -435,7 +457,10 @@ class QuestionBankUploader:
         course_root = self.wait.until(
             lambda _: next(iter(_visible(dialog.find_elements(By.CSS_SELECTOR, '.el-tree-node[data-key="course"]'))), False)
         )
-        course_root.find_element(By.CSS_SELECTOR, ":scope > .el-tree-node__content").click()
+        click_safely(
+            self.driver,
+            course_root.find_element(By.CSS_SELECTOR, ":scope > .el-tree-node__content"),
+        )
 
         course_title = self.wait.until(
             lambda _: next(
@@ -450,7 +475,13 @@ class QuestionBankUploader:
             By.XPATH,
             "ancestor::div[contains(concat(' ',normalize-space(@class),' '),' el-tree-node ')][1]",
         )
-        course_node.find_element(By.CSS_SELECTOR, ":scope > .el-tree-node__content .expand-icon-wrapper").click()
+        click_safely(
+            self.driver,
+            course_node.find_element(
+                By.CSS_SELECTOR,
+                ":scope > .el-tree-node__content .expand-icon-wrapper",
+            ),
+        )
 
         wanted = normalize_text(chapter)
         chapter_node = self.wait.until(
@@ -460,10 +491,7 @@ class QuestionBankUploader:
             By.CSS_SELECTOR,
             ":scope > .el-tree-node__content .custom-tree-node",
         )
-        self.driver.execute_script(
-            "arguments[0].scrollIntoView({block:'nearest'}); arguments[0].click();",
-            chapter_choice,
-        )
+        click_safely(self.driver, chapter_choice)
         self.wait.until(
             lambda _: "is-current" in (chapter_node.get_attribute("class") or "")
             and "active" in (chapter_choice.get_attribute("class") or "")
@@ -472,7 +500,7 @@ class QuestionBankUploader:
             x for x in _visible(dialog.find_elements(By.CSS_SELECTOR, "button,.base-button-component"))
             if normalize_text(x.text) == "保存到此处"
         )
-        save_here.click()
+        click_safely(self.driver, save_here)
         self.wait.until(lambda d: dialog not in _visible(d.find_elements(By.CSS_SELECTOR, ".el-dialog")))
         location = normalize_text(self.driver.find_element(By.CSS_SELECTOR, ".save-region-content").text)
         if wanted not in location:
@@ -498,7 +526,7 @@ class QuestionBankUploader:
         assert self.driver is not None
         save = self.wait.until(lambda d: _exact_visible_text(d, "button,.base-button-component", "保存"))
         before_url = self.driver.current_url
-        save.click()
+        click_safely(self.driver, save)
         try:
             self.wait.until(
                 lambda d: d.current_url != before_url

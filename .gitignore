@@ -4,7 +4,7 @@ __pycache__/
 *.state.lock
 *.deleted-exam-backup-*.json
 work/
+outputs/
 .pytest_cache/
 .venv/
-/考试配置表.xlsx
 

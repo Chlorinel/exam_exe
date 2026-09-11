@@ -61,7 +61,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support.ui import WebDriverWait
+from responsive_wait import WebDriverWait, responsive_sleep
 
 
 CONTENT_FORMAT = "markdown_latex"
@@ -147,16 +147,29 @@ class QuestionBatch:
     spec: QuestionSpec
     questions: list[GeneratedQuestion]
     raw_response: str
+    specs: list[QuestionSpec] = field(default_factory=list)
+
+    def all_specs(self) -> list[QuestionSpec]:
+        return list(self.specs) if self.specs else [self.spec]
+
+    def expected_question_count(self) -> int:
+        return sum(int(item.count) for item in self.all_specs())
 
     def to_dict(self) -> dict[str, Any]:
         spec = asdict(self.spec)
         spec["score"] = str(self.spec.normalized_score())
+        specs = []
+        for item in self.all_specs():
+            value = asdict(item)
+            value["score"] = str(item.normalized_score())
+            specs.append(value)
         return {
             "version": 1,
             "batch_id": self.batch_id,
             "provider": self.provider,
             "created_at": self.created_at,
             "spec": spec,
+            "specs": specs,
             "raw_response": self.raw_response,
             "questions": [q.to_dict() for q in self.questions],
         }
@@ -165,6 +178,11 @@ class QuestionBatch:
     def from_dict(cls, data: dict[str, Any]) -> "QuestionBatch":
         spec_data = dict(data["spec"])
         spec_data["score"] = Decimal(str(spec_data["score"]))
+        specs: list[QuestionSpec] = []
+        for raw_spec in data.get("specs", []):
+            item = dict(raw_spec)
+            item["score"] = Decimal(str(item["score"]))
+            specs.append(QuestionSpec(**item))
         return cls(
             batch_id=data["batch_id"],
             provider=data["provider"],
@@ -175,6 +193,7 @@ class QuestionBatch:
                 for x in data["questions"]
             ],
             raw_response=data.get("raw_response", ""),
+            specs=specs,
         )
 
 
@@ -995,7 +1014,7 @@ class DeepSeekWebGenerator:
         options.add_argument("--profile-directory=Default")
         options.add_argument("--disable-notifications")
         options.add_argument("--start-maximized")
-        options.page_load_strategy = "normal"
+        options.page_load_strategy = "eager"
 
         if headless:
             options.add_argument("--headless=new")
@@ -1195,7 +1214,7 @@ class DeepSeekWebGenerator:
         self.wait_for_input()
 
         # 给前端一点时间恢复路由/历史会话。
-        time.sleep(0.8)
+        responsive_sleep(0.8)
 
         if self._conversation_is_fresh():
             return
@@ -1215,7 +1234,7 @@ class DeepSeekWebGenerator:
                     is not None
                 )
             )
-            time.sleep(0.8)
+            responsive_sleep(0.8)
 
         if not self._conversation_is_fresh():
             raise RuntimeError(
@@ -1487,7 +1506,7 @@ return (
         self._set_prompt_text(input_box, prompt)
 
         # 等页面前端完成状态更新后再找发送按钮。
-        time.sleep(0.2)
+        responsive_sleep(0.2)
 
         send_button = self._find_first_visible(
             self.config.selectors.send_selectors
@@ -1577,7 +1596,7 @@ return (
             ):
                 return last_text
 
-            time.sleep(self.config.poll_interval)
+            responsive_sleep(self.config.poll_interval)
 
     @staticmethod
     def _is_conversation_limit_message(text: str) -> bool:
@@ -1710,6 +1729,55 @@ return (
             f"自动校验异常 {bad} 道。"
         )
 
+        return batch
+
+    def generate_question_groups(
+        self,
+        specs: Iterable[QuestionSpec],
+        *,
+        output_path: Path | None = None,
+    ) -> QuestionBatch:
+        """Generate heterogeneous question groups and save one combined batch."""
+        groups = list(specs)
+        if not groups:
+            raise ValueError("至少需要一组 AI 出题要求。")
+        for spec in groups:
+            spec.validate()
+
+        if len(groups) == 1:
+            batch = self.generate_questions(groups[0], output_path=output_path)
+            batch.specs = groups
+            if output_path is not None:
+                save_question_batch(output_path, batch)
+            return batch
+
+        questions: list[GeneratedQuestion] = []
+        responses: list[str] = []
+        for group_index, spec in enumerate(groups, start=1):
+            self.log(
+                f"正在生成第 {group_index}/{len(groups)} 组："
+                f"{spec.chapter} / {spec.knowledge_point} / {spec.count} 道"
+            )
+            result = self.generate_questions(spec)
+            responses.append(result.raw_response)
+            for question in result.questions:
+                question.local_id = f"Q{len(questions) + 1:03d}"
+                questions.append(question)
+
+        batch = QuestionBatch(
+            batch_id=f"B-{uuid.uuid4().hex[:12]}",
+            provider=self.provider_name,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            spec=groups[0],
+            specs=groups,
+            questions=questions,
+            raw_response="\n\n".join(responses),
+        )
+        if output_path is not None:
+            save_question_batch(output_path, batch)
+        self.log(
+            f"全部出题组完成：{len(groups)} 组，共 {len(questions)} 道。"
+        )
         return batch
 
     def regenerate_question(

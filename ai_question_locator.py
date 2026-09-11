@@ -9,7 +9,7 @@ from typing import Iterable
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support.ui import WebDriverWait
+from responsive_wait import WebDriverWait
 
 from deepseek_question_generator import GeneratedQuestion, QuestionBatch
 from exam_session import (
