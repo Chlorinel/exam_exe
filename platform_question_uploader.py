@@ -440,6 +440,11 @@ class QuestionBankUploader:
         for select in candidates:
             current = normalize_text(select.text)
             if current in set(DIFFICULTY_LABELS.values()):
+                if current == label:
+                    # The manual-create form already defaults to “适中”.
+                    # Avoid reopening the dropdown after rich-text editors
+                    # have triggered several asynchronous page updates.
+                    return
                 click_safely(self.driver, select)
                 option = self.wait.until(
                     lambda d: _exact_visible_text(d, ".el-select-dropdown__item,[role='option']", label)

@@ -56,6 +56,28 @@ def sample_question() -> GeneratedQuestion:
 
 
 class RichTextTests(unittest.TestCase):
+    def test_default_difficulty_is_not_reselected(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        select = Mock()
+        select.is_displayed.return_value = True
+        select.get_attribute.return_value = "el-select white small"
+        select.text = "适中"
+        driver = Mock()
+        driver.find_elements.return_value = [select]
+        uploader = QuestionBankUploader(config, driver=driver)
+
+        with patch(
+            "platform_question_uploader.click_safely",
+        ) as clicked:
+            uploader._select_difficulty("medium")
+
+        clicked.assert_not_called()
+
     def test_question_bank_is_reopened_after_visible_login(self):
         config = UploadConfig(
             course_id="course-test",
