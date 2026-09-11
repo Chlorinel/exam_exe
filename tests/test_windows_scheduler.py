@@ -185,6 +185,9 @@ class WindowsTaskTests(unittest.TestCase):
         login.assert_called_once_with(visible, "course-1")
         background.quit.assert_called_once_with()
         visible.quit.assert_called_once_with()
+        resumed.get.assert_called_once_with(
+            create_signal_exam.activity_url("course-1")
+        )
 
     def test_headless_publish_opens_visible_exam_page_for_review(self):
         background = Mock()
@@ -419,7 +422,9 @@ class WindowsTaskTests(unittest.TestCase):
         driver = Driver()
 
         def finish_login(current, timeout=300):
-            current.current_url = "https://aic.sysu.edu.cn/aic/home"
+            # Even when SSO returns to the intended URL, the implementation
+            # must reopen it instead of reusing the login redirect DOM.
+            current.current_url = target
 
         with patch.object(create_signal_exam, "wait_until_ready"), patch.object(
             create_signal_exam, "is_login_page", side_effect=lambda current: "login.example" in current.current_url
@@ -432,6 +437,40 @@ class WindowsTaskTests(unittest.TestCase):
 
         wait_login.assert_called_once()
         self.assertEqual(driver.visits, [target, target])
+
+    def test_recorded_exam_is_reopened_after_login(self):
+        config = SimpleNamespace(course_id="course1", term_id="term1")
+        exam_id = "123"
+        target = (
+            f"{create_signal_exam.BASE_URL}/aic/exam-hub/teach-exam/"
+            f"create/{config.course_id}/{exam_id}/{config.term_id}"
+            "?from=agentCourse"
+        )
+        driver = Mock()
+        driver.current_url = target
+
+        with patch.object(
+            create_signal_exam,
+            "wait_for_login_if_needed",
+            return_value=True,
+        ), patch.object(
+            create_signal_exam,
+            "wait_until_ready",
+        ) as ready, patch.object(
+            create_signal_exam,
+            "wait_for",
+        ):
+            create_signal_exam.open_recorded_draft(
+                driver,
+                config,
+                exam_id,
+            )
+
+        self.assertEqual(
+            driver.get.call_args_list,
+            [unittest.mock.call(target), unittest.mock.call(target)],
+        )
+        ready.assert_called_once_with(driver, 40)
 
     def test_question_exam_mode_is_clicked_even_with_primary_style(self):
         mode = type("Element", (), {"get_attribute": lambda self, name: "pl-button--primary"})()

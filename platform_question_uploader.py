@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Iterable, Literal
 
 from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.options import Options
@@ -194,8 +198,14 @@ def _visible(elements: Iterable[WebElement]) -> list[WebElement]:
 def _exact_visible_text(driver: webdriver.Edge, selector: str, text: str) -> WebElement | bool:
     wanted = normalize_text(text)
     for element in _visible(driver.find_elements(By.CSS_SELECTOR, selector)):
-        if normalize_text(element.text) == wanted:
-            return element
+        try:
+            if normalize_text(element.text) == wanted:
+                return element
+        except StaleElementReferenceException:
+            # Vue/Element Plus may replace a button between is_displayed()
+            # and .text while the question-bank page is still rendering.
+            # Returning False lets WebDriverWait locate the replacement node.
+            continue
     return False
 
 
@@ -262,19 +272,39 @@ class QuestionBankUploader:
     def _login_required(self) -> bool:
         assert self.driver is not None
         url = self.driver.current_url.casefold()
-        body = self.driver.find_element(By.TAG_NAME, "body").text
+        try:
+            body = self.driver.find_element(By.TAG_NAME, "body").text
+        except StaleElementReferenceException:
+            # A successful login redirects and replaces the whole document.
+            # Treat that transient state as "still waiting" so the next poll
+            # reads the new page instead of aborting the upload.
+            return True
         return "login" in url or "登录" in body and "课程题库" not in body
+
+    def _navigate_to_question_bank(
+        self,
+        driver: webdriver.Edge,
+        target: str,
+    ) -> None:
+        """Open a fresh question-bank document and wait until it is usable."""
+        driver.get(target)
+        WebDriverWait(driver, self.config.page_timeout).until(
+            lambda current: current.execute_script(
+                "return document.readyState"
+            )
+            in ("interactive", "complete")
+        )
 
     def open_question_bank(self) -> None:
         target = self.config.question_bank_url()
         driver = self.launch()
-        driver.get(target)
+        self._navigate_to_question_bank(driver, target)
         if self._login_required():
             return_to_background = self._active_headless
             if return_to_background:
                 print("教学平台登录已失效，正在弹出 Edge 登录窗口。", flush=True)
                 driver = self._restart_browser(headless=False)
-                driver.get(target)
+                self._navigate_to_question_bank(driver, target)
             print(
                 "页面正在等待登录，请在打开的 Edge 中完成登录；"
                 "登录后脚本会自动继续，关闭 Edge 可停止流程。",
@@ -291,12 +321,12 @@ class QuestionBankUploader:
                     )
                 except TimeoutException:
                     print("仍在等待教学平台登录；完成后程序会自动继续。", flush=True)
-            if target not in (driver.current_url or ""):
-                driver.get(target)
             if return_to_background:
                 print("教学平台登录完成，正在恢复后台运行。", flush=True)
                 driver = self._restart_browser(headless=True)
-                driver.get(target)
+            # 登录完成后必须重新访问目标 URL。即使登录跳转已经回到
+            # 同一个地址，也不复用登录期间的文档或任何旧 DOM 元素。
+            self._navigate_to_question_bank(driver, target)
         self.wait.until(lambda d: _exact_visible_text(d, ".base-button-component,button", "新增试题"))
 
     def open_manual_create(self) -> None:

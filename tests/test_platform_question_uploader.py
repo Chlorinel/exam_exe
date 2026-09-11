@@ -6,7 +6,10 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
-from selenium.common.exceptions import ElementClickInterceptedException
+from selenium.common.exceptions import (
+    ElementClickInterceptedException,
+    StaleElementReferenceException,
+)
 
 from deepseek_question_generator import (
     GeneratedQuestion,
@@ -15,10 +18,12 @@ from deepseek_question_generator import (
     save_question_batch,
 )
 from platform_question_uploader import (
+    QuestionBankUploader,
     RichSegment,
     UploadConfig,
     UploadRecord,
     UploadState,
+    _exact_visible_text,
     click_safely,
     load_upload_state,
     parse_markdown_latex,
@@ -51,6 +56,73 @@ def sample_question() -> GeneratedQuestion:
 
 
 class RichTextTests(unittest.TestCase):
+    def test_question_bank_is_reopened_after_visible_login(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        driver = Mock()
+        wait = Mock()
+        wait.until.return_value = Mock()
+        uploader = QuestionBankUploader(config, driver=driver)
+
+        with patch(
+            "platform_question_uploader.WebDriverWait",
+            return_value=wait,
+        ), patch.object(
+            uploader,
+            "_login_required",
+            side_effect=[True, False],
+        ):
+            uploader.open_question_bank()
+
+        target = config.question_bank_url()
+        self.assertEqual(driver.get.call_args_list, [
+            unittest.mock.call(target),
+            unittest.mock.call(target),
+        ])
+
+    def test_visible_text_lookup_skips_replaced_button(self):
+        stale = Mock()
+        stale.is_displayed.return_value = True
+        type(stale).text = property(
+            lambda _self: (_ for _ in ()).throw(
+                StaleElementReferenceException()
+            )
+        )
+        current = Mock()
+        current.is_displayed.return_value = True
+        current.text = "新增试题"
+        driver = Mock()
+        driver.find_elements.return_value = [stale, current]
+
+        self.assertIs(
+            _exact_visible_text(driver, "button", "新增试题"),
+            current,
+        )
+
+    def test_login_redirect_stale_body_is_retried(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        driver = Mock()
+        driver.current_url = config.question_bank_url()
+        body = Mock()
+        body.text = "课程题库"
+        driver.find_element.side_effect = [
+            StaleElementReferenceException(),
+            body,
+        ]
+        uploader = QuestionBankUploader(config, driver=driver)
+
+        self.assertTrue(uploader._login_required())
+        self.assertFalse(uploader._login_required())
+
     def test_parse_inline_and_display_math(self):
         self.assertEqual(
             parse_markdown_latex(r"前 \(x+1\) 中 \[y=2\] 后"),
