@@ -1000,7 +1000,7 @@ class QuestionGenerationDialog(QDialog):
 
         except Exception as exc:
             self.status_label.setText(
-                "生成失败，请检查错误信息。"
+                f"生成失败：{type(exc).__name__}: {exc}"
             )
             QMessageBox.critical(
                 self,

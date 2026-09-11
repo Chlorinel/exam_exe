@@ -45,6 +45,23 @@ def make_question(local_id: str, spec: QuestionSpec) -> GeneratedQuestion:
 
 
 class MultiQuestionGroupTests(unittest.TestCase):
+    def test_new_chat_control_supports_current_tabindex_div(self):
+        text_node = Mock()
+        clickable_div = Mock()
+        clickable_div.is_displayed.return_value = True
+        driver = Mock()
+        driver.find_elements.return_value = [text_node]
+        driver.execute_script.return_value = clickable_div
+        generator = DeepSeekWebGenerator(driver=driver, logger=lambda _message: None)
+
+        clicked = generator._click_new_chat_control()
+
+        self.assertTrue(clicked)
+        clickable_div.click.assert_called_once_with()
+        xpath = driver.find_elements.call_args.args[1]
+        self.assertIn("normalize-space(.)", xpath)
+        self.assertNotIn("self::button or self::a", xpath)
+
     def test_combines_groups_with_unique_local_ids_and_round_trips(self):
         first = make_spec("第一章", "复指数信号", "single_choice", 1)
         second = make_spec("第二章", "卷积积分", "single_choice", 2)
@@ -71,6 +88,7 @@ class MultiQuestionGroupTests(unittest.TestCase):
         self.assertEqual(loaded.expected_question_count(), 3)
         self.assertEqual([s.chapter for s in loaded.all_specs()], ["第一章", "第二章"])
         self.assertTrue(batch_is_fully_approved(loaded))
+        self.assertEqual(generator.generate_questions.call_count, 2)
 
     def test_legacy_batch_uses_single_spec_count(self):
         spec = make_spec("第一章", "周期信号", "single_choice", 1)

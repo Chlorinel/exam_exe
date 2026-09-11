@@ -1153,14 +1153,21 @@ class DeepSeekWebGenerator:
         """
         DeepSeek 首页若仍恢复旧会话，则尝试点击“新对话”。
 
-        不依赖一个固定 CSS class，而是按可见文本寻找可点击元素。
+        不依赖一个固定 CSS class，而是按可见文本寻找控件，再向上
+        找到实际接收点击的祖先元素。DeepSeek 当前页面使用的是
+        ``<div tabindex="0"><span>开启新对话</span></div>``，并不是
+        button/a/role=button。
         """
         assert self.driver is not None
 
         for label in self.config.selectors.new_chat_texts:
+            label_literal = json.dumps(label, ensure_ascii=False)
             xpath = (
-                "//*[self::button or self::a or @role='button']"
-                f"[normalize-space(.)={json.dumps(label, ensure_ascii=False)}]"
+                "//*["
+                f"normalize-space(.)={label_literal} or "
+                f"contains(normalize-space(@aria-label), {label_literal}) or "
+                f"contains(normalize-space(@title), {label_literal})"
+                "]"
             )
 
             elements = self.driver.find_elements(
@@ -1168,7 +1175,19 @@ class DeepSeekWebGenerator:
                 xpath,
             )
 
-            for element in elements:
+            for text_element in elements:
+                try:
+                    element = self.driver.execute_script(
+                        """
+                        return arguments[0].closest(
+                            'button, a, [role="button"], [tabindex]'
+                        ) || arguments[0];
+                        """,
+                        text_element,
+                    ) or text_element
+                except WebDriverException:
+                    element = text_element
+
                 if not _is_displayed(element):
                     continue
 
@@ -1220,21 +1239,33 @@ class DeepSeekWebGenerator:
             return
 
         # 第二层：如果首页恢复了旧对话，主动点击“新对话”。
-        clicked = self._click_new_chat_control()
+        # 页面切换是异步的；最多重试两次，并等待“输入框可用且历史
+        # 回答清空”，避免第一次点击尚未完成就误判失败。
+        for attempt in range(2):
+            clicked = self._click_new_chat_control()
+            if not clicked:
+                break
 
-        if clicked:
-            WebDriverWait(
-                self.driver,
-                self.config.page_timeout,
-            ).until(
-                lambda d: (
-                    self._find_first_visible(
-                        self.config.selectors.input_selectors
+            try:
+                WebDriverWait(
+                    self.driver,
+                    min(self.config.page_timeout, 15),
+                ).until(
+                    lambda d: (
+                        self._find_first_visible(
+                            self.config.selectors.input_selectors
+                        )
+                        is not None
+                        and self._conversation_is_fresh()
                     )
-                    is not None
                 )
-            )
-            responsive_sleep(0.8)
+                return
+            except TimeoutException:
+                if attempt == 0:
+                    self.log(
+                        "DeepSeek：新对话页面尚未就绪，正在重试。"
+                    )
+                    responsive_sleep(0.8)
 
         if not self._conversation_is_fresh():
             raise RuntimeError(
