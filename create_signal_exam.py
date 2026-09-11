@@ -988,16 +988,51 @@ class ProcessLock:
 
 
 def chapter_rows(driver):
-    return [e for e in visible(driver, '.question-item-container') if not e.find_elements(By.CSS_SELECTOR, '.question-type')]
+    rows = []
+    for element in visible(driver, '.question-item-container'):
+        try:
+            if not element.find_elements(By.CSS_SELECTOR, '.question-type'):
+                rows.append(element)
+        except StaleElementReferenceException:
+            # The question-bank drawer replaces its list while changing paths.
+            # Return the stable portion and let the surrounding wait poll again.
+            continue
+    return rows
 
 
 def question_rows(driver):
-    return [e for e in visible(driver, '.question-item-container') if e.find_elements(By.CSS_SELECTOR, '.question-type')]
+    rows = []
+    for element in visible(driver, '.question-item-container'):
+        try:
+            if element.find_elements(By.CSS_SELECTOR, '.question-type'):
+                rows.append(element)
+        except StaleElementReferenceException:
+            continue
+    return rows
 
 
 def count_badge(text_value):
     match = re.search(r'[（(]\s*(\d+)\s*[)）]\s*$', norm(text_value))
     return int(match.group(1)) if match else None
+
+
+def selected_question_count(text_value):
+    """Read the question-bank selection counter across minor spacing variants."""
+    match = re.search(r'已选中\s*(\d+)\s*道\s*题', norm(text_value))
+    return int(match.group(1)) if match else None
+
+
+def question_selected_by_keyword(driver, keyword):
+    for row in question_rows(driver):
+        try:
+            if keyword not in norm(row.text):
+                continue
+            control = row.find_element(By.CSS_SELECTOR, '.select')
+            if 'active' in control.get_attribute('class').split():
+                return True
+        except StaleElementReferenceException:
+            continue
+    return False
 
 
 def course_path_element(driver, config, selector):
@@ -1030,19 +1065,21 @@ def course_path_element(driver, config, selector):
     return matches[-1]
 
 
-def select_configured_questions(driver, config):
-    click_visible_exact(driver, '题库选择', selectors='.base-button-component')
-    WebDriverWait(driver, 30).until(lambda d: len(chapter_rows(d)) > 0)
-    course_path_element(driver, config, '.AGENT_COURSE-driver-anchor .title')
-    selected = 0
+def select_configured_questions(driver, config, already_selected=0):
+    selected = already_selected
     grouped = {}
-    for q in config.questions:
+    for q in config.questions[already_selected:]:
         grouped.setdefault(q.chapter_name, []).append(q)
     for chapter_name, questions in grouped.items():
-        if selected:
+        click_visible_exact(driver, '题库选择', selectors='.base-button-component')
+        WebDriverWait(driver, 30).until(
+            lambda d: bool(chapter_rows(d) or question_rows(d))
+        )
+        if not chapter_rows(driver):
             course_link = course_path_element(driver, config, '.title.clickable')
             course_link.click()
-            WebDriverWait(driver, 30).until(lambda d: len(chapter_rows(d)) > 0)
+        WebDriverWait(driver, 30).until(lambda d: len(chapter_rows(d)) > 0)
+        course_path_element(driver, config, '.AGENT_COURSE-driver-anchor .title')
         matches = [row for row in chapter_rows(driver) if re.sub(r'\s*[（(]\d+[)）]\s*$', '', norm(row.text)) == chapter_name]
         if len(matches) != 1:
             raise RuntimeError(f'找不到唯一章节：{chapter_name}')
@@ -1066,12 +1103,32 @@ def select_configured_questions(driver, config):
                 ActionChains(driver).move_to_element(row).perform()
                 WebDriverWait(driver, 10).until(lambda d: control.is_displayed())
                 control.click()
-            WebDriverWait(driver, 10).until(lambda d: 'active' in control.get_attribute('class').split())
-            selected += 1
-            WebDriverWait(driver, 10).until(lambda d: re.search(rf'已选中\s*{selected}\s*道题', body_text(d)))
-    click_visible_exact(driver, '完成选题', selectors='.base-button-component')
-    WebDriverWait(driver, 30).until(lambda d: len(visible(d, '.preview-question-content-item')) == len(config.questions))
+            WebDriverWait(driver, 10).until(
+                lambda d: question_selected_by_keyword(d, q.keyword)
+            )
+        click_visible_exact(driver, '完成选题', selectors='.base-button-component')
+        selected += len(questions)
+        WebDriverWait(driver, 30).until(
+            lambda d: len(visible(d, '.preview-question-content-item')) == selected
+        )
     finish_question_config(driver, config)
+
+
+def ensure_configured_questions(driver, config):
+    """Resume an interrupted multi-chapter selection without duplicating questions."""
+    cards = visible(driver, '.preview-question-content-item')
+    if len(cards) > len(config.questions):
+        raise RuntimeError('草稿试题数量超过配置数量，停止自动修改。')
+    for position, card in enumerate(cards):
+        expected = config.questions[position]
+        if expected.keyword not in norm(card.text):
+            raise RuntimeError(
+                f'草稿第 {position + 1} 题与配置关键词“{expected.keyword}”不符，停止自动修改。'
+            )
+    if len(cards) < len(config.questions):
+        select_configured_questions(driver, config, already_selected=len(cards))
+    else:
+        finish_question_config(driver, config)
 
 
 def finish_question_config(driver, config):
@@ -1220,10 +1277,7 @@ def prepare_exam(driver, config, state, state_path):
         raise RuntimeError('平台未返回考试编号，停止后续操作。')
     WebDriverWait(driver, 30).until(lambda d: re.search(r'题目数[:：]\s*\d+\s*道', body_text(d)))
     print('步骤：按章节、顺序号和关键词选题并设置分值。', flush=True)
-    if re.search(r'题目数[:：]\s*0\s*道', body_text(driver)):
-        select_configured_questions(driver, config)
-    else:
-        finish_question_config(driver, config)
+    ensure_configured_questions(driver, config)
     # Returning from the question bank can reload stale form values.
     fill_schedule(driver, config)
     fill_exam_name(driver, config.exam_name)
@@ -1254,10 +1308,7 @@ def repair_legacy_question_exam(driver, config, state, state_path):
     if configuration_exam_id(driver.current_url) != expected_id:
         raise RuntimeError('切换考试类型后的考试编号与运行记录不一致。')
     WebDriverWait(driver, 30).until(lambda d: re.search(r'题目数[:：]\s*\d+\s*道', body_text(d)))
-    if re.search(r'题目数[:：]\s*0\s*道', body_text(driver)):
-        select_configured_questions(driver, config)
-    else:
-        finish_question_config(driver, config)
+    ensure_configured_questions(driver, config)
     fill_schedule(driver, config)
     fill_exam_name(driver, config.exam_name)
     fill_exam_description(driver)
