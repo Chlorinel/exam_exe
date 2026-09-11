@@ -71,7 +71,7 @@ def wait_until_ready(driver: webdriver.Edge, timeout: int = 40) -> None:
 
 def wait_for(driver: webdriver.Edge, selector: str, timeout: int = 40) -> WebElement:
     return WebDriverWait(driver, timeout).until(
-        lambda d: next((e for e in d.find_elements(By.CSS_SELECTOR, selector) if e.is_displayed()), False)
+        lambda d: next((e for e in d.find_elements(By.CSS_SELECTOR, selector) if _is_displayed(e)), False)
     )
 
 
@@ -134,7 +134,12 @@ def body_text(driver: webdriver.Edge) -> str:
 
 def is_login_page(driver: webdriver.Edge) -> bool:
     url = (driver.current_url or "").lower()
-    text = body_text(driver).lower()
+    try:
+        text = body_text(driver).lower()
+    except StaleElementReferenceException:
+        # SSO completion replaces the complete document. Keep waiting until
+        # the redirect settles, then callers reopen their target URL.
+        return True
     url_markers = ("login", "auth", "cas", "sso")
     text_markers = ("统一身份认证", "用户名", "密码", "验证码", "登录")
     return any(x in url for x in url_markers) or any(x.lower() in text for x in text_markers)
@@ -183,9 +188,10 @@ def open_activity_page(driver: webdriver.Edge, course_id: str, timeout: int = 18
             wait_for_login_if_needed(driver)
             # Time spent by the user logging in must not consume the page-load budget.
             deadline = time.monotonic() + timeout
-            # SSO may return to a portal or course home instead of the original URL.
-            if '/teaching-act' not in (driver.current_url or ''):
-                driver.get(target)
+            # Always reopen the intended page after login. Do not continue on
+            # the document that existed during the SSO redirect.
+            driver.get(target)
+            wait_until_ready(driver, 40)
             continue
         if '/teaching-act' in (driver.current_url or ''):
             if '创建活动' in body_text(driver) and not visible(driver, '.route-loading'):
@@ -229,7 +235,11 @@ def open_create_exam_page(driver: webdriver.Edge, course_id: str, term_id: str) 
     except TimeoutException:
         # A direct route is the documented route observed during the manual flow.
         driver.get(create_url(course_id, term_id))
-    wait_for_login_if_needed(driver)
+    if wait_for_login_if_needed(driver):
+        # Login may return to the same-looking route while replacing the DOM.
+        # Open a new document and locate every form field again.
+        driver.get(create_url(course_id, term_id))
+        wait_until_ready(driver, 40)
     wait_for(driver, 'input[placeholder="请输入考试名称"]', 40)
     wait_until_ready(driver)
 
@@ -1147,7 +1157,9 @@ def open_recorded_draft(driver, config, exam_id):
         raise RuntimeError('运行记录中的考试编号无效。')
     url = f'{BASE_URL}/aic/exam-hub/teach-exam/create/{config.course_id}/{exam_id}/{config.term_id}?from=agentCourse'
     driver.get(url)
-    wait_for_login_if_needed(driver)
+    if wait_for_login_if_needed(driver):
+        driver.get(url)
+        wait_until_ready(driver, 40)
     wait_for(driver, 'input[placeholder="请输入考试名称"]', 40)
     if configuration_exam_id(driver.current_url) != str(exam_id):
         raise RuntimeError('恢复后的考试编号不一致。')
@@ -1702,6 +1714,10 @@ def launch_for_config(args):
             driver.quit()
             driver = launch_driver(args.profile_dir, True)
             driver._exam_headless = True
+            # The visible login browser is gone. Start the requested operation
+            # from a fresh activity-page document in the background browser.
+            driver.get(target)
+            wait_until_ready(driver, 40)
     return driver
 
 
@@ -1724,7 +1740,7 @@ def open_visible_publish_review(driver, args, config, state):
 def wait_for_login_if_needed(
     driver: webdriver.Edge,
     timeout: int = 360,
-) -> None:
+) -> bool:
     """
     若当前是登录页，只等待用户在 Edge 中完成登录。
 
@@ -1732,7 +1748,7 @@ def wait_for_login_if_needed(
     Edge 窗口可立即终止；无人处理时最多等待 6 分钟。
     """
     if not is_login_page(driver):
-        return
+        return False
 
     print(
         "当前 Edge 配置需要登录。"
@@ -1753,6 +1769,7 @@ def wait_for_login_if_needed(
         except TimeoutException:
             print('仍在等待教学平台登录；完成后程序会自动继续。', flush=True)
     wait_until_ready(driver, 40)
+    return True
 
 
 
