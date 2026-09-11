@@ -85,6 +85,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QStatusBar,
@@ -613,9 +614,17 @@ class QuestionGenerationDialog(QDialog):
         self.specs: list[QuestionSpec] = []
 
         self.setWindowTitle("AI 出题要求")
-        self.resize(980, 900)
+        self.resize(840, 680)
+        self.setMinimumSize(620, 480)
+        self.setSizeGripEnabled(True)
 
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll, 1)
 
         intro = QLabel(
             "填写出题要求后，程序会通过 DeepSeek 网页生成题目。"
@@ -681,7 +690,7 @@ class QuestionGenerationDialog(QDialog):
             "公式格式无需在这里重复要求，程序 Prompt 会自动规定 "
             "Markdown + LaTeX 格式。"
         )
-        self.requirements_edit.setMinimumHeight(150)
+        self.requirements_edit.setMinimumHeight(80)
         layout.addWidget(self.requirements_edit)
 
         plan_buttons = QHBoxLayout()
@@ -708,7 +717,7 @@ class QuestionGenerationDialog(QDialog):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.spec_table.horizontalHeader().setStretchLastSection(True)
-        self.spec_table.setMinimumHeight(170)
+        self.spec_table.setMinimumHeight(120)
         layout.addWidget(self.spec_table)
 
         # DeepSeek profile
@@ -763,7 +772,7 @@ class QuestionGenerationDialog(QDialog):
         layout.addLayout(paths_form)
 
         self.headless_checkbox = QCheckBox(
-            "DeepSeek 使用无头模式（仅在登录状态已确认有效时使用）"
+            "后台运行 DeepSeek 和教学平台网页（登录失效时自动弹出）"
         )
         self.headless_checkbox.setChecked(bool(default_headless))
         layout.addWidget(self.headless_checkbox)
@@ -784,7 +793,7 @@ class QuestionGenerationDialog(QDialog):
 
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.generate_button)
-        layout.addLayout(buttons)
+        outer_layout.addLayout(buttons)
 
         self.cancel_button.clicked.connect(
             self.reject
@@ -1962,7 +1971,8 @@ def generate_and_review_questions(
     session_path: Path | None = None,
     exam_name: str | None = None,
     default_headless: bool = False,
-) -> tuple[Path | None, bool]:
+    include_browser_preference: bool = False,
+) -> tuple[Path | None, bool] | tuple[Path | None, bool, bool]:
     """
     一体化同步流程：
         GUI 填写出题要求
@@ -1986,13 +1996,15 @@ def generate_and_review_questions(
     )
 
     if dialog.exec() != QDialog.DialogCode.Accepted:
-        return None, False
+        result = (None, False)
+        return (*result, dialog.headless_checkbox.isChecked()) if include_browser_preference else result
 
     batch_path = dialog.generated_path
     ds_config = dialog.generated_deepseek_config
 
     if batch_path is None:
-        return None, False
+        result = (None, False)
+        return (*result, dialog.headless_checkbox.isChecked()) if include_browser_preference else result
 
     if session_path is not None:
         if not exam_name:
@@ -2009,7 +2021,8 @@ def generate_and_review_questions(
     approved = question_batch_file_is_approved(batch_path)
     if session_path is not None:
         approved = update_review_session(batch_path, Path(session_path))
-    return batch_path, approved
+    result = (batch_path, approved)
+    return (*result, dialog.headless_checkbox.isChecked()) if include_browser_preference else result
 
 
 
