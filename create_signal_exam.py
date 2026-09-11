@@ -22,7 +22,7 @@ from selenium.common.exceptions import StaleElementReferenceException, TimeoutEx
 from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.remote.webelement import WebElement
-from selenium.webdriver.support.ui import WebDriverWait
+from responsive_wait import WebDriverWait, responsive_sleep
 
 from exam_session import (
     load_exam_state,
@@ -156,7 +156,7 @@ def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
     options.add_argument("--profile-directory=Default")
     options.add_argument("--disable-notifications")
     options.add_argument("--start-maximized")
-    options.page_load_strategy = "normal"
+    options.page_load_strategy = "eager"
     if headless:
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1600,1200")
@@ -193,7 +193,7 @@ def open_activity_page(driver: webdriver.Edge, course_id: str, timeout: int = 18
         else:
             # Authentication has completed but its return address was not preserved.
             driver.get(target)
-        time.sleep(1)
+        responsive_sleep(1)
     raise RuntimeError(
         f'登录或教学活动页在 {timeout} 秒内仍未准备完成，当前 URL 为 {driver.current_url}'
     )
@@ -240,20 +240,39 @@ def fill_exam_name(driver: webdriver.Edge, name: str) -> None:
     field.send_keys(name)
 
 
+def matching_class_buttons(driver: webdriver.Edge, class_code: str) -> list[WebElement]:
+    """Return visible class buttons after the asynchronously loaded panel appears."""
+    target = norm(class_code)
+    return [
+        element
+        for element in visible(driver, ".publish-panel .btn-list button")
+        if norm(element.text) == target
+    ]
+
+
 def select_class(driver: webdriver.Edge, class_code: str) -> None:
     try:
-        buttons = WebDriverWait(driver, 30).until(
-            lambda d: exact_text_elements(d, class_code, "button")
+        buttons = WebDriverWait(driver, 90).until(
+            lambda d: matching_class_buttons(d, class_code)
         )
     except TimeoutException as exc:
-        raise RuntimeError(f"考试页面没有找到参与班级“{class_code}”。") from exc
+        available = [
+            norm(item.text)
+            for item in visible(driver, ".publish-panel .btn-list button")
+            if norm(item.text) and norm(item.text) != "全选"
+        ]
+        detail = "、".join(available) if available else "尚未加载"
+        raise RuntimeError(
+            f"考试页面没有找到参与班级“{class_code}”；"
+            f"页面当前班级：{detail}。"
+        ) from exc
     button = buttons[-1]
     # The page marks a selected class with the primary button class.
     if "pl-button--primary" not in (button.get_attribute("class") or ""):
         click_safely(driver, button)
 
     def selected(d: webdriver.Edge) -> bool:
-        current = exact_text_elements(d, class_code, "button")
+        current = matching_class_buttons(d, class_code)
         return bool(current and "pl-button--primary" in (current[-1].get_attribute("class") or ""))
 
     WebDriverWait(driver, 10).until(selected)
@@ -291,7 +310,7 @@ def choose_paper(driver: webdriver.Edge, course_name: str, paper_name: str) -> N
     observed: list[str] = []
 
     def inspect_current_view() -> WebElement | None:
-        time.sleep(0.8)
+        responsive_sleep(0.8)
         observed.extend(resource_titles(dialog))
         return find_resource(dialog, paper_name)
 
@@ -1090,7 +1109,7 @@ def find_activity(driver, config):
             return ('loaded', names)
         return False
     # Debounced search must settle before using zero or stale counts.
-    time.sleep(1)
+    responsive_sleep(1)
     try:
         _, names = WebDriverWait(driver, 30).until(loaded)
     except TimeoutException as exc:
@@ -1250,7 +1269,7 @@ def save_prepared(driver, config, state, state_path):
     save_state(state_path, state)
     exact_button(driver, '保存').click()
     # Confirm persisted settings by reopening the exact saved activity.
-    time.sleep(1)
+    responsive_sleep(1)
     open_existing(driver, config, state['exam_id'])
     if '/create/' not in driver.current_url:
         raise RuntimeError('保存后未进入预期草稿编辑页，需核对考试状态。')
@@ -1443,7 +1462,7 @@ def publication_counts(driver):
                 and norm(visible(d, '.el-table__body-wrapper tbody tr')[0].text) != first_row
             )
         )
-        time.sleep(0.4)
+        responsive_sleep(0.4)
     return {'total': total, 'published': published, 'unpublished': unpublished}
 
 
@@ -1551,9 +1570,9 @@ def publish_exam_answers(driver, config, state, state_path):
         )
     )
 
-    time.sleep(2)
+    responsive_sleep(2)
     driver.refresh()
-    time.sleep(2)
+    responsive_sleep(2)
     WebDriverWait(driver, 60).until(
         lambda d: exact_text_elements(d, '发布成绩', 'button')
     )
@@ -1653,7 +1672,7 @@ def check_or_release(driver, config, state, state_path, *, commit=False, before_
     state['status'] = 'releasing_grades'
     save_state(state_path, state)
     exact_button(driver, '发布成绩').click()
-    time.sleep(1)
+    responsive_sleep(1)
     confirm_known_dialog(driver, ('发布成绩', '成绩'))
     driver.refresh()
     snapshot = grade_snapshot(driver, config)

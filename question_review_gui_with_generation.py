@@ -66,6 +66,7 @@ from typing import Any
 from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QFont
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -75,6 +76,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -86,6 +88,8 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -134,7 +138,7 @@ def batch_is_fully_approved(batch: QuestionBatch) -> bool:
 
     # 删除或其他审核操作不能让实际题数低于/高于最初的出题要求。
     # 只有题目数量完整时，整批题目才允许进入上传阶段。
-    if len(batch.questions) != batch.spec.count:
+    if len(batch.questions) != batch.expected_question_count():
         return False
 
     for q in batch.questions:
@@ -606,9 +610,10 @@ class QuestionGenerationDialog(QDialog):
 
         self.generated_path: Path | None = None
         self.generated_deepseek_config: DeepSeekWebConfig | None = None
+        self.specs: list[QuestionSpec] = []
 
         self.setWindowTitle("AI 出题要求")
-        self.resize(760, 720)
+        self.resize(980, 900)
 
         layout = QVBoxLayout(self)
 
@@ -652,7 +657,7 @@ class QuestionGenerationDialog(QDialog):
 
         self.score_spin = QDoubleSpinBox()
         self.score_spin.setRange(0.1, 1000.0)
-        self.score_spin.setDecimals(2)
+        self.score_spin.setDecimals(1)
         self.score_spin.setSingleStep(0.5)
         self.score_spin.setValue(5.0)
 
@@ -678,6 +683,33 @@ class QuestionGenerationDialog(QDialog):
         )
         self.requirements_edit.setMinimumHeight(150)
         layout.addWidget(self.requirements_edit)
+
+        plan_buttons = QHBoxLayout()
+        self.add_spec_button = QPushButton("加入出题清单")
+        self.remove_spec_button = QPushButton("移除选中组")
+        self.add_spec_button.clicked.connect(self._add_current_spec)
+        self.remove_spec_button.clicked.connect(self._remove_selected_specs)
+        plan_buttons.addWidget(self.add_spec_button)
+        plan_buttons.addWidget(self.remove_spec_button)
+        plan_buttons.addStretch(1)
+        layout.addLayout(plan_buttons)
+
+        self.spec_table = QTableWidget(0, 7)
+        self.spec_table.setHorizontalHeaderLabels(
+            ["章节", "知识点", "题型", "难度", "数量", "分值", "补充要求"]
+        )
+        self.spec_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.spec_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.spec_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.spec_table.horizontalHeader().setStretchLastSection(True)
+        self.spec_table.setMinimumHeight(170)
+        layout.addWidget(self.spec_table)
 
         # DeepSeek profile
         profile_row = QHBoxLayout()
@@ -787,6 +819,65 @@ class QuestionGenerationDialog(QDialog):
                 selected += ".json"
             self.output_edit.setText(selected)
 
+    def _spec_labels(self, spec: QuestionSpec) -> list[str]:
+        type_index = self.type_combo.findData(spec.question_type)
+        difficulty_index = self.difficulty_combo.findData(spec.difficulty)
+        type_label = (
+            self.type_combo.itemText(type_index)
+            if type_index >= 0
+            else spec.question_type
+        )
+        difficulty_label = (
+            self.difficulty_combo.itemText(difficulty_index)
+            if difficulty_index >= 0
+            else spec.difficulty
+        )
+        return [
+            spec.chapter,
+            spec.knowledge_point,
+            type_label,
+            difficulty_label,
+            str(spec.count),
+            str(spec.normalized_score()),
+            spec.requirements,
+        ]
+
+    def _refresh_spec_table(self) -> None:
+        self.spec_table.setRowCount(len(self.specs))
+        for row, spec in enumerate(self.specs):
+            for column, value in enumerate(self._spec_labels(spec)):
+                self.spec_table.setItem(row, column, QTableWidgetItem(value))
+
+    def _add_current_spec(self) -> None:
+        try:
+            spec = self._build_spec()
+        except Exception as exc:
+            QMessageBox.warning(self, "无法加入出题清单", str(exc))
+            return
+        self.specs.append(spec)
+        self._refresh_spec_table()
+        self.chapter_edit.clear()
+        self.knowledge_edit.clear()
+        self.requirements_edit.clear()
+        self.status_label.setText(
+            f"已加入 {len(self.specs)} 组，共 "
+            f"{sum(item.count for item in self.specs)} 道题。"
+        )
+
+    def _remove_selected_specs(self) -> None:
+        rows = sorted(
+            {index.row() for index in self.spec_table.selectionModel().selectedRows()},
+            reverse=True,
+        )
+        for row in rows:
+            del self.specs[row]
+        self._refresh_spec_table()
+
+    def _build_specs(self) -> list[QuestionSpec]:
+        # Single-group use stays one click: if no row was explicitly added,
+        # the values currently shown in the form are used directly.
+        return list(self.specs) if self.specs else [self._build_spec()]
+
     def _build_spec(self) -> QuestionSpec:
         course = self.course_edit.text().strip()
         chapter = self.chapter_edit.text().strip()
@@ -820,7 +911,7 @@ class QuestionGenerationDialog(QDialog):
 
     def _generate(self) -> None:
         try:
-            spec = self._build_spec()
+            specs = self._build_specs()
 
             profile_text = self.profile_edit.text().strip()
             output_text = self.output_edit.text().strip()
@@ -850,6 +941,8 @@ class QuestionGenerationDialog(QDialog):
 
             self.generate_button.setEnabled(False)
             self.cancel_button.setEnabled(False)
+            self.add_spec_button.setEnabled(False)
+            self.remove_spec_button.setEnabled(False)
             self.status_label.setText(
                 "正在调用 DeepSeek 生成题目。"
                 "如果浏览器要求登录或人机验证，请在 Edge 中手动完成。"
@@ -864,8 +957,8 @@ class QuestionGenerationDialog(QDialog):
                 config,
                 logger=ui_log,
             ) as generator:
-                batch = generator.generate_questions(
-                    spec,
+                batch = generator.generate_question_groups(
+                    specs,
                     output_path=output_path,
                 )
 
@@ -899,6 +992,8 @@ class QuestionGenerationDialog(QDialog):
         finally:
             self.generate_button.setEnabled(True)
             self.cancel_button.setEnabled(True)
+            self.add_spec_button.setEnabled(True)
+            self.remove_spec_button.setEnabled(True)
 
 
 # ============================================================================
@@ -1785,7 +1880,7 @@ def _run_review_window_blocking(
     为 QMainWindow 提供类似 QDialog.exec() 的同步等待。
 
     这里只创建局部 QEventLoop，不创建第二个 QApplication。
-    因此既可独立运行，也可嵌入 exam_control_gui.pyw。
+    因此既可独立运行，也可嵌入专用的出题流程窗口。
     """
     loop = QEventLoop()
 

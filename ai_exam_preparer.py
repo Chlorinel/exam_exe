@@ -30,6 +30,27 @@ from question_review_gui_with_generation import (
 )
 
 
+def reviewed_batch_can_resume(
+    batch_path: Path,
+    session_path: Path,
+    exam_name: str,
+) -> bool:
+    """Return whether a failed post-review run can resume without regenerating."""
+    batch_path = Path(batch_path)
+    session_path = Path(session_path)
+    if not batch_path.is_file() or not session_path.is_file():
+        return False
+    try:
+        session = load_session(session_path)
+        return (
+            session.exam_name == exam_name
+            and session.status == "reviewed"
+            and question_batch_file_is_approved(batch_path)
+        )
+    except Exception:
+        return False
+
+
 def prepare_ai_exam_config(
     source_config_path: Path,
     *,
@@ -134,21 +155,31 @@ def prepare_ai_exam_config(
         exist_ok=True,
     )
 
-    # 生成窗口负责收集 QuestionSpec；
-    # 审核窗口负责逐题人工确认。
-    reviewed_batch_path, approved = (
-        generate_and_review_questions(
-            default_profile_dir=(
-                deepseek_profile_dir
-            ),
-            default_output_path=(
-                batch_path
-            ),
-            session_path=session_path,
-            exam_name=base_config.exam_name,
-            default_headless=deepseek_headless,
+    if reviewed_batch_can_resume(
+        batch_path,
+        session_path,
+        base_config.exam_name,
+    ):
+        # A previous run reached human approval but failed during upload or
+        # location lookup. Reuse that exact reviewed batch to avoid asking
+        # DeepSeek again and producing different questions.
+        reviewed_batch_path, approved = batch_path, True
+    else:
+        # 生成窗口负责收集 QuestionSpec；
+        # 审核窗口负责逐题人工确认。
+        reviewed_batch_path, approved = (
+            generate_and_review_questions(
+                default_profile_dir=(
+                    deepseek_profile_dir
+                ),
+                default_output_path=(
+                    batch_path
+                ),
+                session_path=session_path,
+                exam_name=base_config.exam_name,
+                default_headless=deepseek_headless,
+            )
         )
-    )
 
     if reviewed_batch_path is None:
         # 用户在生成/审核 GUI 中取消。

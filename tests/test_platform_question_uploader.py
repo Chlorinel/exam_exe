@@ -1,10 +1,12 @@
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+
+from selenium.common.exceptions import ElementClickInterceptedException
 
 from deepseek_question_generator import (
     GeneratedQuestion,
@@ -17,6 +19,7 @@ from platform_question_uploader import (
     UploadConfig,
     UploadRecord,
     UploadState,
+    click_safely,
     load_upload_state,
     parse_markdown_latex,
     question_fingerprint,
@@ -65,6 +68,18 @@ class RichTextTests(unittest.TestCase):
         self.assertEqual(question_fingerprint(question), question_fingerprint(question))
         changed = replace(question, answer="A")
         self.assertNotEqual(question_fingerprint(question), question_fingerprint(changed))
+
+    def test_click_safely_uses_dom_click_when_page_layer_intercepts(self):
+        driver = Mock()
+        element = Mock()
+        element.is_displayed.return_value = True
+        element.is_enabled.return_value = True
+        element.click.side_effect = ElementClickInterceptedException()
+
+        click_safely(driver, element)
+
+        self.assertEqual(driver.execute_script.call_count, 2)
+        driver.execute_script.assert_called_with("arguments[0].click();", element)
 
 
 class StateTests(unittest.TestCase):

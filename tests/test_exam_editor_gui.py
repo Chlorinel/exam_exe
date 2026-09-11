@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from exam_control_gui import (
+from exam_editor_gui import (
     build_backend_args,
     build_run_exam_args,
     session_action_permissions,

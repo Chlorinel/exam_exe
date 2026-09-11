@@ -49,9 +49,8 @@ echo ============================================================
 echo   项目目录：%TARGET_DIR%
 echo   Python：%TARGET_DIR%\.venv\Scripts\python.exe
 echo.
-echo   下次运行可进入项目目录，双击 exam_control_gui.pyw；
-echo   如果仓库版本尚无图形界面，请运行：
-echo   .venv\Scripts\python.exe create_signal_exam.py --help
+echo   AI 出题、审核和上传：双击 question_workflow_gui.pyw
+echo   创建、编辑和发布考试：双击 exam_editor_gui.pyw
 echo.
 pause
 exit /b 0
@@ -169,7 +168,10 @@ echo [检查] 验证主要程序可以加载
     "%TARGET_DIR%\exam_session.py" ^
     "%TARGET_DIR%\create_signal_exam.py" ^
     "%TARGET_DIR%\deepseek_question_generator.py" ^
-    "%TARGET_DIR%\platform_question_uploader.py"
+    "%TARGET_DIR%\platform_question_uploader.py" ^
+    "%TARGET_DIR%\question_workflow_gui.py" ^
+    "%TARGET_DIR%\exam_editor_gui.py" ^
+    "%TARGET_DIR%\responsive_wait.py"
 exit /b %errorlevel%
 
 :CHECK_ONLY

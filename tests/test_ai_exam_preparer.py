@@ -8,6 +8,7 @@ from unittest.mock import Mock, call, patch
 
 from ai_exam_preparer import (
     prepare_ai_exam_config,
+    reviewed_batch_can_resume,
 )
 
 
@@ -54,6 +55,46 @@ class AIExamPreparerTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_reviewed_batch_can_resume_after_upload_failure(self):
+        batch = self.root / "reviewed.json"
+        session = self.root / "session.json"
+        batch.write_text("{}", encoding="utf-8")
+        session.write_text("{}", encoding="utf-8")
+
+        with (
+            patch(
+                "ai_exam_preparer.load_session",
+                return_value=SimpleNamespace(
+                    exam_name="测试考试",
+                    status="reviewed",
+                ),
+            ),
+            patch(
+                "ai_exam_preparer.question_batch_file_is_approved",
+                return_value=True,
+            ),
+        ):
+            self.assertTrue(
+                reviewed_batch_can_resume(batch, session, "测试考试")
+            )
+
+    def test_reviewed_batch_does_not_resume_for_another_exam(self):
+        batch = self.root / "reviewed.json"
+        session = self.root / "session.json"
+        batch.write_text("{}", encoding="utf-8")
+        session.write_text("{}", encoding="utf-8")
+
+        with patch(
+            "ai_exam_preparer.load_session",
+            return_value=SimpleNamespace(
+                exam_name="其他考试",
+                status="reviewed",
+            ),
+        ):
+            self.assertFalse(
+                reviewed_batch_can_resume(batch, session, "测试考试")
+            )
 
     @patch(
         "ai_exam_preparer.create_ai_exam_config"
