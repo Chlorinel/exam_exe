@@ -167,19 +167,23 @@ def prepare_ai_exam_config(
     else:
         # 生成窗口负责收集 QuestionSpec；
         # 审核窗口负责逐题人工确认。
-        reviewed_batch_path, approved = (
-            generate_and_review_questions(
-                default_profile_dir=(
-                    deepseek_profile_dir
-                ),
-                default_output_path=(
-                    batch_path
-                ),
-                session_path=session_path,
-                exam_name=base_config.exam_name,
-                default_headless=deepseek_headless,
-            )
+        generation_result = generate_and_review_questions(
+            default_profile_dir=(
+                deepseek_profile_dir
+            ),
+            default_output_path=(
+                batch_path
+            ),
+            session_path=session_path,
+            exam_name=base_config.exam_name,
+            default_headless=deepseek_headless,
+            include_browser_preference=True,
         )
+        if len(generation_result) == 3:
+            reviewed_batch_path, approved, platform_headless = generation_result
+        else:
+            # Older integrations and existing test doubles return two values.
+            reviewed_batch_path, approved = generation_result
 
     if reviewed_batch_path is None:
         # 用户在生成/审核 GUI 中取消。
