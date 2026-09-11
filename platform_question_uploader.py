@@ -552,22 +552,69 @@ class QuestionBankUploader:
             raise RuntimeError(f"章节名称不唯一：{wanted}")
         return matches[0] if matches else False
 
-    def save_current_question(self) -> str | None:
+    def _manual_form_is_blank(self) -> bool:
+        """Return True only after the platform has created a fresh empty form."""
+        components = self._editor_components()
+        if len(components) < 2:
+            return False
+        try:
+            editors = [
+                component.find_element(
+                    By.CSS_SELECTOR,
+                    ".tiptap.ProseMirror",
+                )
+                for component in components
+            ]
+            return all(not normalize_text(editor.text) for editor in editors)
+        except WebDriverException:
+            return False
+
+    def save_current_question(
+        self,
+        *,
+        create_next: bool = False,
+    ) -> str | None:
         assert self.driver is not None
-        save = self.wait.until(lambda d: _exact_visible_text(d, "button,.base-button-component", "保存"))
+        button_text = "保存并创建下一题" if create_next else "保存"
+        save = self.wait.until(
+            lambda d: _exact_visible_text(
+                d,
+                "button,.base-button-component",
+                button_text,
+            )
+        )
         before_url = self.driver.current_url
         click_safely(self.driver, save)
-        try:
-            self.wait.until(
-                lambda d: d.current_url != before_url
-                or any(
-                    word in normalize_text(x.text)
-                    for x in _visible(d.find_elements(By.CSS_SELECTOR, ".el-message,.el-notification"))
-                    for word in ("成功", "已保存")
+
+        def saved(current: webdriver.Edge) -> bool:
+            if current.current_url != before_url:
+                return True
+            for message in _visible(
+                current.find_elements(
+                    By.CSS_SELECTOR,
+                    ".el-message,.el-notification",
                 )
-            )
+            ):
+                try:
+                    message_text = normalize_text(message.text)
+                except StaleElementReferenceException:
+                    continue
+                if any(word in message_text for word in ("成功", "已保存")):
+                    return True
+            return create_next and self._manual_form_is_blank()
+
+        try:
+            self.wait.until(saved)
+            if create_next:
+                # A success toast can appear before the editor is replaced.
+                # Wait for the new empty form before the caller fills the next
+                # question, so no DOM element from the saved question is reused.
+                self.wait.until(lambda _: self._manual_form_is_blank())
         except TimeoutException as exc:
-            raise RuntimeError("点击保存后未确认平台是否成功，状态已标记为 uncertain，请人工核对后再运行。") from exc
+            raise RuntimeError(
+                f"点击“{button_text}”后未确认平台是否成功，"
+                "状态已标记为 uncertain，请人工核对后再运行。"
+            ) from exc
         match = re.search(r"/(?:question|detail)/(\w+)", self.driver.current_url)
         return match.group(1) if match else None
 
@@ -595,6 +642,7 @@ def upload_batch(
                 f"Session 状态为 {session.status}，只有 reviewed 状态允许上传题库。"
             )
     uploader = QuestionBankUploader(config)
+    manual_form_open = False
     try:
         uploader.open_question_bank()
         for index, question in enumerate(batch.questions, start=1):
@@ -618,7 +666,8 @@ def upload_batch(
             if record and record.fingerprint != fingerprint and record.status == "uploaded":
                 raise RuntimeError(f"题目 {question.local_id} 上传后又被修改，程序不会自动重复创建。")
 
-            uploader.open_manual_create()
+            if not manual_form_open:
+                uploader.open_manual_create()
             uploader.fill_question(question)
             location = uploader.select_chapter(question.chapter)
             print(f"[{index}/{len(batch.questions)}] 已填写：{question.local_id} → {location}", flush=True)
@@ -637,8 +686,18 @@ def upload_batch(
             if session is not None:
                 update_question_upload(session, question.local_id, upload_status="saving")
                 save_session(session, session_path)
+            create_next = any(
+                not (
+                    (later_record := state.questions.get(later.local_id))
+                    and later_record.fingerprint == question_fingerprint(later)
+                    and later_record.status == "uploaded"
+                )
+                for later in batch.questions[index:]
+            )
             try:
-                platform_id = uploader.save_current_question()
+                platform_id = uploader.save_current_question(
+                    create_next=create_next,
+                )
             except Exception:
                 state.questions[question.local_id].status = "uncertain"
                 state.questions[question.local_id].updated_at = time.time()
@@ -662,8 +721,7 @@ def upload_batch(
                 )
                 save_session(session, session_path)
             print(f"[{index}/{len(batch.questions)}] 保存成功：{question.local_id}", flush=True)
-            if index < len(batch.questions):
-                uploader.open_question_bank()
+            manual_form_open = create_next
     finally:
         uploader.close()
 

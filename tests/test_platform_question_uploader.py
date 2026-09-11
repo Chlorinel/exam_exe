@@ -181,6 +181,11 @@ class UploadBatchTests(unittest.TestCase):
             state_path = root / "questions.upload-state.json"
 
             question = sample_question()
+            second_question = replace(
+                question,
+                local_id="q-2",
+                stem=r"已知 \(h(t)\)，求响应。",
+            )
             batch = QuestionBatch(
                 batch_id="batch-upload-test",
                 provider="deepseek-web",
@@ -189,10 +194,10 @@ class UploadBatchTests(unittest.TestCase):
                     course_name="信号与系统",
                     chapter="第一章",
                     knowledge_point="系统性质",
-                    count=1,
+                    count=2,
                     score=Decimal("5"),
                 ),
-                questions=[question],
+                questions=[question, second_question],
                 raw_response="",
             )
             save_question_batch(batch_path, batch)
@@ -208,15 +213,17 @@ class UploadBatchTests(unittest.TestCase):
                 profile_dir=root / "profile",
             )
 
+            events = []
+
             class FakeUploader:
                 def __init__(self, _config):
                     self.config = _config
 
                 def open_question_bank(self):
-                    return None
+                    events.append("open_bank")
 
                 def open_manual_create(self):
-                    return None
+                    events.append("open_manual")
 
                 def fill_question(self, _question):
                     return None
@@ -224,8 +231,9 @@ class UploadBatchTests(unittest.TestCase):
                 def select_chapter(self, chapter):
                     return chapter
 
-                def save_current_question(self):
-                    return "remote-1"
+                def save_current_question(self, *, create_next=False):
+                    events.append(("save", create_next))
+                    return f"remote-{len([x for x in events if isinstance(x, tuple)])}"
 
                 def close(self):
                     return None
@@ -245,12 +253,26 @@ class UploadBatchTests(unittest.TestCase):
 
             self.assertIsInstance(state, UploadState)
             self.assertIn("q-1", state.questions)
+            self.assertIn("q-2", state.questions)
+            self.assertEqual(
+                events,
+                [
+                    "open_bank",
+                    "open_manual",
+                    ("save", True),
+                    ("save", False),
+                ],
+            )
 
             record = state.questions["q-1"]
             self.assertEqual(record.status, "uploaded")
             self.assertEqual(
                 record.platform_question_id,
                 "remote-1",
+            )
+            self.assertEqual(
+                state.questions["q-2"].platform_question_id,
+                "remote-2",
             )
 
             persisted = load_upload_state(
