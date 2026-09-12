@@ -39,6 +39,9 @@ class WebDriverWait(SeleniumWebDriverWait):
     @staticmethod
     def _responsive(method: Callable[[Any], Any]) -> Callable[[Any], Any]:
         def wrapped(driver: Any) -> Any:
+            hook = getattr(driver, "_responsive_wait_hook", None)
+            if callable(hook):
+                hook()
             pump_gui_events()
             return method(driver)
 

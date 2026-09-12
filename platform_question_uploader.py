@@ -23,6 +23,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.remote.webelement import WebElement
 from responsive_wait import WebDriverWait
+from platform_guidance import dismiss_platform_guidance, install_guidance_hook
 
 from deepseek_question_generator import GeneratedQuestion, load_question_batch
 from exam_session import load_session, save_session, update_question_upload
@@ -233,6 +234,8 @@ class QuestionBankUploader:
         self.driver = driver
         self._owns_driver = driver is None
         self._active_headless = bool(config.headless and driver is None)
+        if driver is not None:
+            install_guidance_hook(driver)
 
     def launch(self, *, headless: bool | None = None) -> webdriver.Edge:
         if self.driver is not None:
@@ -249,6 +252,7 @@ class QuestionBankUploader:
         if headless:
             options.add_argument("--headless=new")
         self.driver = webdriver.Edge(options=options)
+        install_guidance_hook(self.driver)
         self.driver.set_page_load_timeout(self.config.page_timeout)
         self._active_headless = bool(headless)
         return self.driver
@@ -294,6 +298,7 @@ class QuestionBankUploader:
             )
             in ("interactive", "complete")
         )
+        dismiss_platform_guidance(driver)
 
     def open_question_bank(self) -> None:
         target = self.config.question_bank_url()

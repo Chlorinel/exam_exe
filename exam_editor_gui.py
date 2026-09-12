@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from create_signal_exam import load_config, run_configuration
+from create_signal_exam import config_from_session, load_config, run_configuration
 from exam_session import load_session
 
 
@@ -141,7 +141,7 @@ class ExamEditorWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("考试创建与发布")
-        self.resize(820, 410)
+        self.resize(820, 470)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -162,6 +162,20 @@ class ExamEditorWindow(QMainWindow):
         browse.clicked.connect(self.choose_config)
         config_row.addWidget(browse)
         layout.addLayout(config_row)
+
+        session_row = QHBoxLayout()
+        session_row.addWidget(QLabel("AI 出题数据："))
+        self.session_edit = QLineEdit(str(DEFAULT_SESSION) if DEFAULT_SESSION.exists() else "")
+        self.session_edit.setPlaceholderText("可选；选择 ExamSession JSON，留空则使用配置表选题明细")
+        self.session_edit.editingFinished.connect(self._refresh_session_status)
+        session_row.addWidget(self.session_edit, 1)
+        session_browse = QPushButton("选择...")
+        session_browse.clicked.connect(self.choose_session)
+        session_row.addWidget(session_browse)
+        clear_session = QPushButton("使用配置表")
+        clear_session.clicked.connect(self.clear_session)
+        session_row.addWidget(clear_session)
+        layout.addLayout(session_row)
 
         profile_row = QHBoxLayout()
         profile_row.addWidget(QLabel("教学平台登录配置："))
@@ -201,11 +215,14 @@ class ExamEditorWindow(QMainWindow):
         return Path(self.platform_profile_edit.text().strip()).expanduser().resolve()
 
     def _active_session_path(self) -> Path | None:
-        if not DEFAULT_SESSION.exists():
+        value = self.session_edit.text().strip()
+        if not value:
             return None
-        session = load_session(DEFAULT_SESSION)
-        config = load_config(self._config_path(), require_questions=False)
-        return DEFAULT_SESSION if session.exam_name == config.exam_name else None
+        path = Path(value).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"AI 出题数据文件不存在：{path}")
+        load_session(path)
+        return path
 
     def _load_current_session(self):
         path = self._active_session_path()
@@ -216,13 +233,13 @@ class ExamEditorWindow(QMainWindow):
             session = self._load_current_session()
             if session is None:
                 self.session_label.setText(
-                    "当前配置没有对应 Session；如使用 AI 题目，请先运行 question_workflow_gui.pyw。"
+                    "题目来源：考试配置表中的“选题明细”。"
                 )
             else:
                 total = len(session.questions)
                 uploaded = sum(q.upload_status == "uploaded" for q in session.questions)
                 self.session_label.setText(
-                    f"当前考试：<b>{session.exam_name}</b><br>"
+                    f"AI 出题数据：<b>{session.exam_name}</b><br>"
                     f"状态：{session.status}　题目：{total}　已上传：{uploaded}/{total}"
                 )
             can_create, can_publish = session_action_permissions(session)
@@ -255,13 +272,31 @@ class ExamEditorWindow(QMainWindow):
             self.config_edit.setText(filename)
             self._refresh_session_status()
 
+    def choose_session(self) -> None:
+        current = self.session_edit.text().strip()
+        start = Path(current).expanduser() if current else DEFAULT_SESSION
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择上一次 AI 出题数据",
+            str(start.parent),
+            "ExamSession JSON (*.json)",
+        )
+        if filename:
+            self.session_edit.setText(filename)
+            self._refresh_session_status()
+
+    def clear_session(self) -> None:
+        self.session_edit.clear()
+        self._refresh_session_status()
+
     def validate_config(self) -> None:
         try:
-            config = load_config(self._config_path(), require_questions=False)
+            base_config = load_config(self._config_path(), require_questions=False)
+            session = self._load_current_session()
+            config = config_from_session(base_config, session) if session is not None else base_config
         except Exception as exc:
             QMessageBox.critical(self, "配置检查失败", f"{type(exc).__name__}: {exc}")
             return
-        session = self._load_current_session()
         source = "Session" if session is not None else "Excel 选题明细"
         count = len(session.questions) if session is not None else len(config.questions)
         QMessageBox.information(

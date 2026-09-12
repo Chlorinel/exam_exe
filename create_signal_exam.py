@@ -23,6 +23,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options
 from selenium.webdriver.remote.webelement import WebElement
 from responsive_wait import WebDriverWait, responsive_sleep
+from platform_guidance import dismiss_platform_guidance, install_guidance_hook
 
 from exam_session import (
     load_exam_state,
@@ -166,6 +167,7 @@ def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1600,1200")
     driver = webdriver.Edge(options=options)
+    install_guidance_hook(driver)
     driver.set_page_load_timeout(90)
     return driver
 
@@ -823,6 +825,7 @@ def fill_exam_description(driver, description=DEFAULT_EXAM_DESCRIPTION):
 
 
 def exact_button(driver, label):
+    dismiss_platform_guidance(driver)
     found = exact_text_elements(driver, label, 'button')
     if len(found) != 1:
         raise RuntimeError(f'按钮“{label}”不唯一或不可见。')
