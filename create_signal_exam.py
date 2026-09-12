@@ -76,8 +76,16 @@ def wait_for(driver: webdriver.Edge, selector: str, timeout: int = 40) -> WebEle
     )
 
 
-def click_safely(driver: webdriver.Edge, element: WebElement) -> None:
-    """Click a visible element, falling back to DOM click for overlay/race issues."""
+def click_safely(
+    driver: webdriver.Edge,
+    element: WebElement,
+    *,
+    allow_hidden: bool = False,
+) -> None:
+    """Click a control, using DOM click when layout CSS hides or covers it."""
+    if allow_hidden:
+        driver.execute_script("arguments[0].click();", element)
+        return
     try:
         WebDriverWait(driver, 10).until(lambda d: element.is_displayed() and element.is_enabled())
         element.click()
@@ -1145,11 +1153,16 @@ def select_configured_questions(driver, config, already_selected=0):
                 raise RuntimeError(f'唯一标识 {q.identifier} 匹配题目数量不是 1，停止选题。')
             control = row.find_element(By.CSS_SELECTOR, '.select')
             if 'active' not in control.get_attribute('class').split():
-                WebDriverWait(driver, 10).until(lambda d: control.is_displayed())
-                click_safely(driver, control)
-            WebDriverWait(driver, 10).until(
-                lambda d: question_selected_by_identifier(d, q.identifier)
-            )
+                click_safely(driver, control, allow_hidden=True)
+            try:
+                WebDriverWait(driver, 10).until(
+                    lambda d: question_selected_by_identifier(d, q.identifier)
+                )
+            except TimeoutException as exc:
+                raise RuntimeError(
+                    f'已通过唯一标识 {q.identifier} 找到题目，'
+                    '但平台未确认选中状态。'
+                ) from exc
         click_visible_exact(driver, '完成选题', selectors='.base-button-component')
         selected += len(questions)
         WebDriverWait(driver, 30).until(

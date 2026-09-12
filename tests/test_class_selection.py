@@ -29,6 +29,19 @@ class ClassSelectionTests(unittest.TestCase):
             control,
         )
 
+    def test_safe_click_can_select_css_hidden_control_without_mouse(self) -> None:
+        driver = Mock()
+        control = Mock()
+        control.is_displayed.return_value = False
+
+        click_safely(driver, control, allow_hidden=True)
+
+        control.click.assert_not_called()
+        driver.execute_script.assert_called_once_with(
+            "arguments[0].click();",
+            control,
+        )
+
     @patch("create_signal_exam.finish_question_config")
     @patch("create_signal_exam.select_configured_questions")
     @patch("create_signal_exam.visible")
