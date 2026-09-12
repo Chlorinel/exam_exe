@@ -58,6 +58,7 @@ class ConfigWriterTests(unittest.TestCase):
                     "xl/worksheets/sheet2.xml"
                 ).decode("utf-8")
             self.assertIn("五位唯一标识（核对用）", worksheet)
+            self.assertIn("章内题目编号（可留空）", worksheet)
 
             original = config.read_bytes()
             prepare_user_installation(root)
@@ -212,7 +213,7 @@ class ConfigWriterTests(unittest.TestCase):
                 output.exists()
             )
 
-    def test_rejects_existing_question_slot(self):
+    def test_allows_repeated_legacy_question_number(self):
         config = load_config(
             TEMPLATE,
             require_questions=False,
@@ -243,18 +244,15 @@ class ConfigWriterTests(unittest.TestCase):
                 / "duplicate.xlsx"
             )
 
-            with self.assertRaises(
-                ConfigWriteError
-            ):
-                create_ai_exam_config(
-                    TEMPLATE,
-                    output,
-                    [located],
-                )
-
-            self.assertFalse(
-                output.exists()
+            create_ai_exam_config(
+                TEMPLATE,
+                output,
+                [located],
             )
+
+            self.assertTrue(output.exists())
+            created = load_config(output)
+            self.assertEqual(created.questions[-1].identifier, "[71486]")
 
 
 if __name__ == "__main__":

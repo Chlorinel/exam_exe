@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import tempfile
 import unittest
 
-from create_signal_exam import ExamConfig, config_from_session
+from create_signal_exam import (
+    ExamConfig,
+    config_from_session,
+    optional_question_number,
+)
 from deepseek_question_generator import (
     GeneratedQuestion,
     QuestionBatch,
@@ -34,6 +38,12 @@ from question_review_gui_with_generation import (
 
 
 class ExamSessionTests(unittest.TestCase):
+    def test_legacy_question_number_is_optional_metadata(self):
+        self.assertIsNone(optional_question_number(None))
+        self.assertIsNone(optional_question_number("不是题号"))
+        self.assertIsNone(optional_question_number("1.5"))
+        self.assertEqual(optional_question_number("3"), 3)
+
     def test_generation_and_review_update_the_same_session_file(self):
         question = GeneratedQuestion(
             local_id="Q001",
