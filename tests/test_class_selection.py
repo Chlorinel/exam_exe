@@ -4,7 +4,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from selenium.common.exceptions import ElementClickInterceptedException
+
 from create_signal_exam import (
+    click_safely,
     ensure_configured_questions,
     matching_class_buttons,
     selected_question_count,
@@ -12,6 +15,20 @@ from create_signal_exam import (
 
 
 class ClassSelectionTests(unittest.TestCase):
+    def test_safe_click_uses_dom_when_layout_intercepts_control(self) -> None:
+        driver = Mock()
+        control = Mock()
+        control.is_displayed.return_value = True
+        control.is_enabled.return_value = True
+        control.click.side_effect = ElementClickInterceptedException()
+
+        click_safely(driver, control)
+
+        driver.execute_script.assert_called_once_with(
+            "arguments[0].click();",
+            control,
+        )
+
     @patch("create_signal_exam.finish_question_config")
     @patch("create_signal_exam.select_configured_questions")
     @patch("create_signal_exam.visible")
