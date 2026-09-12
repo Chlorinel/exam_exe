@@ -65,6 +65,40 @@ from responsive_wait import WebDriverWait, responsive_sleep
 
 
 CONTENT_FORMAT = "markdown_latex"
+
+
+_OVERESCAPED_LATEX_SEGMENTS = (
+    re.compile(
+        re.escape(r"\\(") + r".*?" + re.escape(r"\\)"),
+        re.DOTALL,
+    ),
+    re.compile(
+        re.escape(r"\\[") + r".*?" + re.escape(r"\\]"),
+        re.DOTALL,
+    ),
+)
+
+
+def normalize_latex_escaping(value: str) -> str:
+    r"""Remove one accidental extra escaping layer from LaTeX segments.
+
+    DeepSeek occasionally returns valid JSON whose LaTeX was escaped twice.
+    After ``json.loads`` that produces ``\\(\\frac...\\)`` instead of
+    ``\(\frac...\)``. A doubled opening and closing delimiter is used as
+    the signal, so ordinary LaTeX ``\\`` row separators and already-correct
+    formulas are left alone.
+    """
+    normalized = str(value or "")
+
+    for pattern in _OVERESCAPED_LATEX_SEGMENTS:
+        normalized = pattern.sub(
+            lambda match: match.group(0).replace(r"\\", "\\"),
+            normalized,
+        )
+
+    return normalized
+
+
 DEFAULT_CHAT_URL = "https://chat.deepseek.com/"
 
 
@@ -136,6 +170,14 @@ class GeneratedQuestion:
     def from_dict(cls, data: dict[str, Any]) -> "GeneratedQuestion":
         value = dict(data)
         value["score"] = Decimal(str(value["score"]))
+        for key in ("stem", "answer", "explanation"):
+            if key in value:
+                value[key] = normalize_latex_escaping(value[key])
+        if isinstance(value.get("options"), dict):
+            value["options"] = {
+                str(key): normalize_latex_escaping(text)
+                for key, text in value["options"].items()
+            }
         return cls(**value)
 
 
@@ -278,6 +320,11 @@ class DeepSeekWebConfig:
 def build_generation_prompt(spec: QuestionSpec) -> str:
     spec.validate()
     score = spec.normalized_score()
+    latex_value_example = r"计算 \(x(t)=\frac{1}{2}\) 的值"
+    latex_json_example = json.dumps(
+        latex_value_example,
+        ensure_ascii=False,
+    )
 
     return f"""你是一名严谨的大学课程教师。请严格按照以下要求生成考试题。
 
@@ -303,7 +350,13 @@ def build_generation_prompt(spec: QuestionSpec) -> str:
 10. 单选题必须有 A/B/C/D 四个不同选项且只有一个正确答案。
 11. 同一批题目不得完全重复。
 12. 只能输出合法 JSON；禁止 Markdown 代码块、前言、结尾说明。
-13. JSON 字符串里的 LaTeX 反斜杠必须正确转义。
+13. JSON 字符串里的 LaTeX 反斜杠必须正确转义，而且只能转义一层。
+14. 按你实际输出的 JSON 原文计数，公式分隔符和 LaTeX 命令开头的一个反斜杠必须写成恰好两个连续反斜杠；禁止重复转义成四个。只有 LaTeX 本身需要两个反斜杠的矩阵换行符例外。
+
+正确示例（这是要直接输出的 JSON 原文）：
+"question": {latex_json_example}
+
+上述 JSON 被解析后必须得到：{latex_value_example}
 
 严格返回：
 
@@ -341,6 +394,10 @@ def build_regeneration_prompt(
         ensure_ascii=False,
         indent=2,
     )
+    latex_json_example = json.dumps(
+        r"计算 \(x(t)=\frac{1}{2}\) 的值",
+        ensure_ascii=False,
+    )
 
     return f"""请重新生成下面这一道考试题。
 
@@ -358,7 +415,8 @@ def build_regeneration_prompt(
 5. 行内公式使用 \\( ... \\)，独立公式使用 \\[ ... \\]。
 6. 禁止 $$...$$ 和公式图片。
 7. 只能输出合法 JSON，不要 Markdown 代码块或其他文字。
-8. JSON 字符串中的反斜杠必须正确转义。
+8. JSON 字符串中的 LaTeX 反斜杠只能转义一层：按实际输出的 JSON 原文计数，公式分隔符和 LaTeX 命令开头的一个反斜杠写成恰好两个连续反斜杠，禁止重复转义成四个。只有 LaTeX 本身需要两个反斜杠的矩阵换行符例外。
+9. 正确 JSON 原文示例："question": {latex_json_example}
 
 严格返回：
 
@@ -572,14 +630,16 @@ def _normalize_options(value: Any) -> dict[str, str] | None:
     if isinstance(value, list):
         letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
         return {
-            letters[i]: str(item).strip()
+            letters[i]: normalize_latex_escaping(str(item).strip())
             for i, item in enumerate(value)
             if i < len(letters)
         }
 
     if isinstance(value, dict):
         return {
-            str(key).strip().upper(): str(item).strip()
+            str(key).strip().upper(): normalize_latex_escaping(
+                str(item).strip()
+            )
             for key, item in value.items()
         }
 
@@ -636,10 +696,16 @@ def _question_from_mapping(
                 fallback_spec.difficulty if fallback_spec else "",
             )
         ).strip(),
-        stem=str(data.get("question", data.get("stem", ""))).strip(),
+        stem=normalize_latex_escaping(
+            str(data.get("question", data.get("stem", ""))).strip()
+        ),
         options=_normalize_options(data.get("options")),
-        answer=str(data.get("answer", "")).strip(),
-        explanation=str(data.get("explanation", "")).strip(),
+        answer=normalize_latex_escaping(
+            str(data.get("answer", "")).strip()
+        ),
+        explanation=normalize_latex_escaping(
+            str(data.get("explanation", "")).strip()
+        ),
         score=score,
     )
     question.validation_errors = validate_question(question)
