@@ -923,6 +923,15 @@ def state_fingerprint(config):
     return hashlib.sha256(config.summary().encode('utf-8')).hexdigest()
 
 
+def fresh_state(config):
+    return {
+        'version': 1,
+        'config_fingerprint': state_fingerprint(config),
+        'exam_name': config.exam_name,
+        'status': 'new',
+    }
+
+
 def save_state(path, state):
     path.parent.mkdir(parents=True, exist_ok=True)
     state['updated_at'] = datetime.now(BEIJING).isoformat()
@@ -940,11 +949,56 @@ def save_state(path, state):
 
 def load_state(path, config):
     if not path.exists():
-        return {'version': 1, 'config_fingerprint': state_fingerprint(config), 'exam_name': config.exam_name, 'status': 'new'}
+        return fresh_state(config)
     state = json.loads(path.read_text(encoding='utf-8'))
     if state.get('config_fingerprint') != state_fingerprint(config):
+        if state.get('status') == 'new' and not state.get('exam_id'):
+            print(
+                '旧运行记录尚未创建平台考试，已为当前配置安全重置。',
+                flush=True,
+            )
+            return fresh_state(config)
         raise RuntimeError('配置表已改变，与运行记录不一致。请核对旧考试后使用新的 --state 文件，不会自动重复创建。')
     return state
+
+
+def resolve_run_state_path(
+    explicit_path,
+    config_path: Path,
+    session_path: Path | None,
+    session,
+    config,
+) -> Path:
+    """Choose one durable run receipt per ExamSession."""
+    if explicit_path:
+        return Path(explicit_path)
+
+    legacy_path = Path(config_path).with_suffix('.state.json')
+    if session_path is None or session is None:
+        return legacy_path
+
+    session_id = str(getattr(session, 'session_id', '') or '')
+    if not re.fullmatch(r'\d{8}_\d{6}', session_id):
+        raise RuntimeError(f'Session ID 格式无效：{session_id}')
+    target = (
+        Path(session_path).resolve().parent
+        / 'exam-run-states'
+        / f'{session_id}.state.json'
+    )
+    if target.exists() or not legacy_path.exists():
+        return target
+
+    try:
+        legacy_state = json.loads(legacy_path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return target
+    if legacy_state.get('config_fingerprint') == state_fingerprint(config):
+        save_state(target, legacy_state)
+        print(
+            f'已将当前考试的旧运行记录迁移到：{target}',
+            flush=True,
+        )
+    return target
 
 
 class ProcessLock:
@@ -2008,7 +2062,13 @@ def run_configuration(args, *, publish_confirmer=None):
         print('配置校验通过。仅本地检查，没有打开浏览器、创建考试或发布成绩。')
         return 0
 
-    state_path = args.state or args.config.with_suffix('.state.json')
+    state_path = resolve_run_state_path(
+        args.state,
+        args.config,
+        session_path,
+        session,
+        config,
+    )
     with ProcessLock(state_path.with_suffix('.lock')):
         state = load_state(state_path, config)
         if args.release_grades:
