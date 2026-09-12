@@ -565,6 +565,19 @@ def positive_int(value, label):
     return int(number)
 
 
+def optional_question_number(value) -> int | None:
+    """Read legacy column C as metadata without making it a validation gate."""
+    if not text(value):
+        return None
+    try:
+        number = Decimal(text(value))
+    except InvalidOperation:
+        return None
+    if not number.is_finite() or number <= 0 or number != number.to_integral_value():
+        return None
+    return int(number)
+
+
 def chapter_title(number: int) -> str:
     digits = '零一二三四五六七八九'
     if not 1 <= number <= 99:
@@ -577,7 +590,7 @@ def chapter_title(number: int) -> str:
 class Question:
     chapter: int
     chapter_name: str
-    number: int
+    number: int | None
     identifier: str
     score: Decimal | None
 
@@ -636,7 +649,7 @@ def load_config(path: Path, *, require_questions: bool = True) -> ExamConfig:
         if not re.fullmatch(r'[A-Za-z0-9_-]+', text(settings[key])):
             raise ConfigError(f'“{key}”格式无效；当前每份配置仅支持一个班级。')
     questions = []
-    seen = set()
+    seen_identifiers = set()
     notes = {'填写规则', '编号含义', '原脚本限制'}
     for index, row in enumerate(sheets['选题明细'][1:], start=2):
         row = (row + [None] * 5)[:5]
@@ -647,14 +660,15 @@ def load_config(path: Path, *, require_questions: bool = True) -> ExamConfig:
         name = text(row[1]) or default_title
         if not (name.startswith(default_title) or re.match(rf'^第\s*{chapter}\s*章', name)):
             raise ConfigError(f'第 {index} 行章节名称与“第几章”不一致。')
-        number = positive_int(row[2], f'选题明细第 {index} 行题号')
-        key = chapter, number
-        if key in seen:
-            raise ConfigError(f'重复题目：第 {chapter} 章第 {number} 题。')
-        seen.add(key)
+        # 第三列仅保留为可选记录，不参与考试创建或题目核对。
+        # 旧文件中即使为空或内容无效，也不会阻止脚本运行。
+        number = optional_question_number(row[2])
         identifier = text(row[3])
         if not re.fullmatch(r'\[\d{5}\]', identifier):
             raise ConfigError(f'第 {index} 行请填写形如 [12345] 的五位唯一标识。')
+        if identifier in seen_identifiers:
+            raise ConfigError(f'五位唯一标识重复：{identifier}')
+        seen_identifiers.add(identifier)
         score = None
         if text(row[4]):
             try:
@@ -665,7 +679,7 @@ def load_config(path: Path, *, require_questions: bool = True) -> ExamConfig:
                 raise ConfigError(f'第 {index} 行分值须大于 0、不超过 1000，最多一位小数。')
         questions.append(Question(chapter, name, number, identifier, score))
     if require_questions and not questions:
-        raise ConfigError('选题明细尚未填写：请逐行填写章节、章内顺序号、五位唯一标识和分值。')
+        raise ConfigError('选题明细尚未填写：请逐行填写章节、五位唯一标识和分值。')
     return ExamConfig(text(settings['考试名称']), text(settings['课程名称']), text(settings['课程ID']), text(settings['学期ID']), text(settings['参与班级']), start, end, release, method, tuple(questions))
 
 
@@ -682,19 +696,18 @@ def _session_chapter_number(value) -> int:
 
 def config_from_session(base: ExamConfig, session) -> ExamConfig:
     questions = []
-    seen = set()
+    seen_identifiers = set()
     for index, record in enumerate(session.questions, start=1):
         chapter = _session_chapter_number(getattr(record, 'chapter', ''))
         number = getattr(record, 'question_number', None)
         identifier = text(getattr(record, 'identifier', ''))
         raw_score = getattr(record, 'score', 0)
-        if number is None or not re.fullmatch(r'\[\d{5}\]', identifier):
-            raise ConfigError(f'Session 第 {index} 题缺少题库编号或五位唯一标识。')
-        number = positive_int(number, f'Session 第 {index} 题章内编号')
-        key = chapter, number
-        if key in seen:
-            raise ConfigError(f'Session 包含重复题目：第 {chapter} 章第 {number} 题。')
-        seen.add(key)
+        if not re.fullmatch(r'\[\d{5}\]', identifier):
+            raise ConfigError(f'Session 第 {index} 题缺少五位唯一标识。')
+        if identifier in seen_identifiers:
+            raise ConfigError(f'Session 包含重复五位唯一标识：{identifier}')
+        seen_identifiers.add(identifier)
+        number = optional_question_number(number)
         try:
             score = Decimal(str(raw_score))
         except InvalidOperation as exc:
@@ -1152,15 +1165,18 @@ def select_configured_questions(
         )
         # Fail closed if folders, pagination or lazy loading mean the chapter is incomplete.
         WebDriverWait(driver, 30).until(lambda d: len(question_rows(d)) == total and not chapter_rows(d))
-        rows = question_rows(driver)
         for q in questions:
-            if q.number > len(rows):
-                raise RuntimeError(f'{chapter_name} 只有 {len(rows)} 道题，无法选择第 {q.number} 题。')
-            row = question_rows(driver)[q.number - 1]
-            if q.identifier not in norm(row.text):
-                raise RuntimeError(f'{chapter_name} 第 {q.number} 题与唯一标识 {q.identifier} 不符，停止选题。')
-            if sum(q.identifier in norm(r.text) for r in question_rows(driver)) != 1:
-                raise RuntimeError(f'唯一标识 {q.identifier} 匹配题目数量不是 1，停止选题。')
+            matched_rows = [
+                row
+                for row in question_rows(driver)
+                if q.identifier in norm(row.text)
+            ]
+            if len(matched_rows) != 1:
+                raise RuntimeError(
+                    f'{chapter_name} 中五位唯一标识 {q.identifier} '
+                    f'匹配到 {len(matched_rows)} 道题，停止选题。'
+                )
+            row = matched_rows[0]
             control = row.find_element(By.CSS_SELECTOR, '.select')
             if 'active' not in control.get_attribute('class').split():
                 click_safely(driver, control, allow_hidden=True)
@@ -1368,7 +1384,7 @@ def prepare_exam(driver, config, state, state_path):
     if not state['exam_id']:
         raise RuntimeError('平台未返回考试编号，停止后续操作。')
     WebDriverWait(driver, 30).until(lambda d: re.search(r'题目数[:：]\s*\d+\s*道', body_text(d)))
-    print('步骤：按章节、顺序号和五位唯一标识选题并设置分值。', flush=True)
+    print('步骤：按章节和五位唯一标识选题并设置分值。', flush=True)
     ensure_configured_questions(driver, config)
     # Returning from the question bank can reload stale form values.
     fill_schedule(driver, config)

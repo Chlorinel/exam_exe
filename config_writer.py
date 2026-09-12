@@ -510,6 +510,11 @@ def _append_questions_xml(
 
     _set_inline_string_cell(
         sheet_data,
+        "C1",
+        "章内题目编号（可留空）",
+    )
+    _set_inline_string_cell(
+        sheet_data,
         "D1",
         "五位唯一标识（核对用）",
     )
@@ -790,15 +795,6 @@ def create_ai_exam_config(
         ]
     ] = []
 
-    occupied = {
-        (
-            question.chapter,
-            question.number,
-        )
-        for question
-        in base_config.questions
-    }
-
     local_ids: set[str] = set()
 
     for question in ai_questions:
@@ -822,18 +818,6 @@ def create_ai_exam_config(
             question
         )
 
-        key = (
-            row[0],
-            row[2],
-        )
-
-        if key in occupied:
-            raise ConfigWriteError(
-                f"第 {row[0]} 章第 {row[2]} 题"
-                "已经存在于选题明细中。"
-            )
-
-        occupied.add(key)
         prepared.append(row)
 
     output_path.parent.mkdir(
