@@ -158,11 +158,26 @@ def question_fingerprint(question: GeneratedQuestion) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def load_upload_state(path: Path, batch_id: str) -> UploadState:
+def load_upload_state(
+    path: Path,
+    batch_id: str,
+    *,
+    reset_on_batch_mismatch: bool = False,
+) -> UploadState:
     if not path.exists():
         return UploadState(batch_id=batch_id)
     state = UploadState.from_dict(json.loads(path.read_text(encoding="utf-8")))
     if state.batch_id != batch_id:
+        if reset_on_batch_mismatch:
+            previous_batch_id = state.batch_id
+            state = UploadState(batch_id=batch_id)
+            save_upload_state(path, state)
+            print(
+                "检测到上一批题目的上传状态，已自动重置："
+                f"{previous_batch_id} → {batch_id}",
+                flush=True,
+            )
+            return state
         raise RuntimeError("上传状态文件属于另一批题目，请更换状态文件或删除旧状态文件。")
     return state
 
@@ -642,7 +657,11 @@ def upload_batch(
     if not question_batch_file_is_approved(batch_path):
         raise RuntimeError("题目批次未全部通过人工审核，禁止进入平台填写或上传。")
     batch = load_question_batch(batch_path)
-    state = load_upload_state(state_path, batch.batch_id)
+    state = load_upload_state(
+        state_path,
+        batch.batch_id,
+        reset_on_batch_mismatch=True,
+    )
     session = None
     if session_path is not None:
         session_path = Path(session_path).resolve()

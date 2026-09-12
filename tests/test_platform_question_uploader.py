@@ -193,6 +193,35 @@ class StateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 load_upload_state(path, "new-batch")
 
+    def test_can_reset_state_for_other_batch_before_upload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            save_upload_state(
+                path,
+                UploadState(
+                    "old-batch",
+                    {
+                        "q-1": UploadRecord(
+                            "old-fingerprint",
+                            "uploaded",
+                            "remote-1",
+                        )
+                    },
+                ),
+            )
+
+            loaded = load_upload_state(
+                path,
+                "new-batch",
+                reset_on_batch_mismatch=True,
+            )
+
+            self.assertEqual(loaded.batch_id, "new-batch")
+            self.assertEqual(loaded.questions, {})
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["batch_id"], "new-batch")
+            self.assertEqual(persisted["questions"], {})
+
 
 
 class UploadBatchTests(unittest.TestCase):
