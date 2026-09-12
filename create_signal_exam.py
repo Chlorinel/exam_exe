@@ -1115,10 +1115,20 @@ def course_path_element(driver, config, selector):
     return matches[-1]
 
 
-def select_configured_questions(driver, config, already_selected=0):
+def select_configured_questions(
+    driver,
+    config,
+    already_selected=0,
+    questions_to_select=None,
+):
     selected = already_selected
     grouped = {}
-    for q in config.questions[already_selected:]:
+    pending = (
+        list(questions_to_select)
+        if questions_to_select is not None
+        else list(config.questions[already_selected:])
+    )
+    for q in pending:
         grouped.setdefault(q.chapter_name, []).append(q)
     for chapter_name, questions in grouped.items():
         click_visible_exact(driver, '题库选择', selectors='.base-button-component')
@@ -1171,19 +1181,44 @@ def select_configured_questions(driver, config, already_selected=0):
     finish_question_config(driver, config)
 
 
+def map_question_cards(cards, questions):
+    """Map preview cards by identifier because the platform may reorder them."""
+    mapping = {}
+    known = {q.identifier: q for q in questions}
+    for position, card in enumerate(cards, start=1):
+        card_text = norm(card.text)
+        matches = [identifier for identifier in known if identifier in card_text]
+        if len(matches) != 1:
+            found = re.findall(r'\[\d{5}\]', card_text)
+            raise RuntimeError(
+                f'草稿第 {position} 题无法对应唯一标识：'
+                f'检测到 {found or "无"}。'
+            )
+        identifier = matches[0]
+        if identifier in mapping:
+            raise RuntimeError(f'草稿中唯一标识 {identifier} 重复。')
+        mapping[identifier] = card
+    return mapping
+
+
 def ensure_configured_questions(driver, config):
     """Resume an interrupted multi-chapter selection without duplicating questions."""
     cards = visible(driver, '.preview-question-content-item')
     if len(cards) > len(config.questions):
         raise RuntimeError('草稿试题数量超过配置数量，停止自动修改。')
-    for position, card in enumerate(cards):
-        expected = config.questions[position]
-        if expected.identifier not in norm(card.text):
-            raise RuntimeError(
-                f'草稿第 {position + 1} 题与唯一标识 {expected.identifier} 不符，停止自动修改。'
-            )
+    mapped = map_question_cards(cards, config.questions)
     if len(cards) < len(config.questions):
-        select_configured_questions(driver, config, already_selected=len(cards))
+        pending = [
+            question
+            for question in config.questions
+            if question.identifier not in mapped
+        ]
+        select_configured_questions(
+            driver,
+            config,
+            already_selected=len(cards),
+            questions_to_select=pending,
+        )
     else:
         finish_question_config(driver, config)
 
@@ -1192,9 +1227,9 @@ def finish_question_config(driver, config):
     cards = visible(driver, '.preview-question-content-item')
     if len(cards) != len(config.questions):
         raise RuntimeError('草稿试题数量与配置不一致，停止自动修改。')
-    for position, (q, card) in enumerate(zip(config.questions, cards), start=1):
-        if q.identifier not in norm(card.text):
-            raise RuntimeError(f'组卷后第 {position} 题与唯一标识 {q.identifier} 不符。')
+    mapped = map_question_cards(cards, config.questions)
+    for q in config.questions:
+        card = mapped[q.identifier]
         field = card.find_element(By.CSS_SELECTOR, 'input[placeholder="输入分值"]')
         if q.score is not None:
             set_input(driver, field, str(q.score))

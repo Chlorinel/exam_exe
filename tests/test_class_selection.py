@@ -9,6 +9,7 @@ from selenium.common.exceptions import ElementClickInterceptedException
 from create_signal_exam import (
     click_safely,
     ensure_configured_questions,
+    map_question_cards,
     matching_class_buttons,
     selected_question_count,
 )
@@ -66,8 +67,26 @@ class ClassSelectionTests(unittest.TestCase):
 
         ensure_configured_questions(driver, config)
 
-        select_mock.assert_called_once_with(driver, config, already_selected=2)
+        select_mock.assert_called_once_with(
+            driver,
+            config,
+            already_selected=2,
+            questions_to_select=[config.questions[2]],
+        )
         finish_mock.assert_not_called()
+
+    def test_preview_cards_are_mapped_by_identifier_after_reordering(self) -> None:
+        first = SimpleNamespace(text="second question [10002]")
+        second = SimpleNamespace(text="first question [10001]")
+        questions = [
+            SimpleNamespace(identifier="[10001]"),
+            SimpleNamespace(identifier="[10002]"),
+        ]
+
+        mapping = map_question_cards([first, second], questions)
+
+        self.assertIs(mapping["[10001]"], second)
+        self.assertIs(mapping["[10002]"], first)
 
     @patch("create_signal_exam.visible")
     def test_interrupted_selection_rejects_nonmatching_prefix(self, visible_mock: Mock) -> None:
