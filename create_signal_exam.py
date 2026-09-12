@@ -940,7 +940,23 @@ def configuration_exam_id(url):
 
 
 def state_fingerprint(config):
-    return hashlib.sha256(config.summary().encode('utf-8')).hexdigest()
+    if isinstance(config, ExamConfig):
+        # Column C (the legacy chapter-local number) is informational only.  It
+        # must not start a new run or invalidate a resumable run when edited.
+        payload = asdict(config)
+        for question in payload.get('questions', []):
+            question.pop('number', None)
+        source = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(',', ':'),
+            default=str,
+        )
+    else:
+        # Keep lightweight test doubles and third-party callers compatible.
+        source = config.summary()
+    return hashlib.sha256(source.encode('utf-8')).hexdigest()
 
 
 def fresh_state(config):
@@ -972,13 +988,8 @@ def load_state(path, config):
         return fresh_state(config)
     state = json.loads(path.read_text(encoding='utf-8'))
     if state.get('config_fingerprint') != state_fingerprint(config):
-        if state.get('status') == 'new' and not state.get('exam_id'):
-            print(
-                '旧运行记录尚未创建平台考试，已为当前配置安全重置。',
-                flush=True,
-            )
-            return fresh_state(config)
-        raise RuntimeError('配置表已改变，与运行记录不一致。请核对旧考试后使用新的 --state 文件，不会自动重复创建。')
+        print('运行记录属于其他配置，已为当前配置创建新记录。', flush=True)
+        return fresh_state(config)
     return state
 
 
@@ -989,22 +1000,30 @@ def resolve_run_state_path(
     session,
     config,
 ) -> Path:
-    """Choose one durable run receipt per ExamSession."""
+    """Choose one durable run receipt per ExamSession or Excel configuration."""
     if explicit_path:
         return Path(explicit_path)
 
     legacy_path = Path(config_path).with_suffix('.state.json')
-    if session_path is None or session is None:
-        return legacy_path
-
-    session_id = str(getattr(session, 'session_id', '') or '')
-    if not re.fullmatch(r'\d{8}_\d{6}', session_id):
-        raise RuntimeError(f'Session ID 格式无效：{session_id}')
-    target = (
-        Path(session_path).resolve().parent
-        / 'exam-run-states'
-        / f'{session_id}.state.json'
-    )
+    if session_path is not None and session is not None:
+        session_id = str(getattr(session, 'session_id', '') or '')
+        if not re.fullmatch(r'\d{8}_\d{6}', session_id):
+            raise RuntimeError(f'Session ID 格式无效：{session_id}')
+        target = (
+            Path(session_path).resolve().parent
+            / 'exam-run-states'
+            / f'{session_id}.state.json'
+        )
+    else:
+        # A single workbook is reused for many exams.  Keying the receipt by
+        # effective configuration prevents a completed old exam from blocking
+        # the next one while preserving exact resume behaviour for each run.
+        target = (
+            Path(config_path).resolve().parent
+            / 'work'
+            / 'exam-run-states'
+            / f'excel-{state_fingerprint(config)}.state.json'
+        )
     if target.exists() or not legacy_path.exists():
         return target
 
