@@ -57,6 +57,54 @@ def sample_question() -> GeneratedQuestion:
 
 
 class RichTextTests(unittest.TestCase):
+    def test_caret_is_moved_to_editor_end_without_mouse(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        driver = Mock()
+        editor = Mock()
+        uploader = QuestionBankUploader(config, driver=driver)
+
+        uploader._move_caret_to_editor_end(editor)
+
+        script, passed_editor = driver.execute_script.call_args.args
+        self.assertIs(passed_editor, editor)
+        self.assertIn("range.collapse(false)", script)
+        self.assertIn("selection.removeAllRanges()", script)
+        editor.click.assert_not_called()
+
+    def test_rejects_stem_when_identifier_is_not_at_rendered_end(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        editor = Mock(text="题干正文")
+        component = Mock()
+        component.find_element.return_value = editor
+        uploader = QuestionBankUploader(config, driver=Mock())
+
+        with self.assertRaisesRegex(RuntimeError, "末尾缺少唯一标识"):
+            uploader._verify_trailing_identifier(component, "[12345]")
+
+    def test_accepts_stem_with_identifier_at_rendered_end(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        editor = Mock(text="题干正文 [12345]")
+        component = Mock()
+        component.find_element.return_value = editor
+        uploader = QuestionBankUploader(config, driver=Mock())
+
+        uploader._verify_trailing_identifier(component, "[12345]")
+
     def test_default_difficulty_is_not_reselected(self):
         config = UploadConfig(
             course_id="course-test",

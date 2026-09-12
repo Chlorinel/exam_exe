@@ -382,6 +382,36 @@ class QuestionBankUploader:
         assert self.driver is not None
         return _visible(self.driver.find_elements(By.CSS_SELECTOR, ".polymas-editor-component"))
 
+    def _move_caret_to_editor_end(self, editor: WebElement) -> None:
+        """Place the ProseMirror selection at the end without a mouse click."""
+        assert self.driver is not None
+        self.driver.execute_script(
+            "const editor=arguments[0];"
+            "const doc=editor.ownerDocument;"
+            "const selection=doc.defaultView.getSelection();"
+            "const range=doc.createRange();"
+            "editor.focus();"
+            "range.selectNodeContents(editor);"
+            "range.collapse(false);"
+            "selection.removeAllRanges();"
+            "selection.addRange(range);"
+            "doc.dispatchEvent(new Event('selectionchange',{bubbles:true}));",
+            editor,
+        )
+
+    def _verify_trailing_identifier(
+        self,
+        component: WebElement,
+        identifier: str,
+    ) -> None:
+        editor = component.find_element(By.CSS_SELECTOR, ".tiptap.ProseMirror")
+        rendered = normalize_text(editor.text)
+        if not rendered.endswith(identifier):
+            raise RuntimeError(
+                f"平台题干写入后末尾缺少唯一标识 {identifier}，"
+                "已停止保存，请重新运行上传。"
+            )
+
     def fill_rich_content(self, component: WebElement, value: str) -> None:
         assert self.driver is not None
         editor = component.find_element(By.CSS_SELECTOR, ".tiptap.ProseMirror")
@@ -391,8 +421,13 @@ class QuestionBankUploader:
         for segment in parse_markdown_latex(value):
             if segment.kind == "text":
                 if segment.value:
+                    self._move_caret_to_editor_end(editor)
                     editor.send_keys(segment.value)
                 continue
+            # The toolbar click moves focus away from ProseMirror. Store an
+            # explicit end-of-document selection first so the formula plugin
+            # inserts at the same append position as the local source.
+            self._move_caret_to_editor_end(editor)
             click_safely(
                 self.driver,
                 component.find_element(By.CSS_SELECTOR, '[data-menu-type="math"]'),
@@ -418,7 +453,7 @@ class QuestionBankUploader:
             click_safely(self.driver, confirm)
             self.wait.until(lambda d: dialog not in _visible(d.find_elements(By.CSS_SELECTOR, ".el-dialog")))
             editor = component.find_element(By.CSS_SELECTOR, ".tiptap.ProseMirror")
-            click_safely(self.driver, editor)
+            self._move_caret_to_editor_end(editor)
 
     def _choose_answers(self, label: str, answer: str) -> None:
         assert self.driver is not None
@@ -495,6 +530,13 @@ class QuestionBankUploader:
             self.fill_rich_content(components[0], question.stem)
             self.fill_rich_content(components[1], question.answer)
             self.fill_rich_content(components[-1], question.explanation)
+        current_components = self._editor_components()
+        if not current_components:
+            raise RuntimeError("题干编辑区域在填写后被页面替换，无法执行保存前校验。")
+        self._verify_trailing_identifier(
+            current_components[0],
+            question.identifier,
+        )
         self._select_difficulty(question.difficulty)
 
     def select_chapter(self, chapter: str) -> str:
