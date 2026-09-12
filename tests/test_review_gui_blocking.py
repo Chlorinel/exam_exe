@@ -11,6 +11,27 @@ import question_review_gui_with_generation as review
 
 
 class GenerateAndReviewBlockingTests(unittest.TestCase):
+    def test_new_generation_removes_previous_json_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "questions.json"
+            stale = [
+                output,
+                root / "questions.ai-original.json",
+                root / "questions.review-log.json",
+                root / "questions.upload-state.json",
+            ]
+            for path in stale:
+                path.write_text("{}", encoding="utf-8")
+            workbook = root / "questions.xlsx"
+            workbook.write_text("keep", encoding="utf-8")
+
+            removed = review.clear_previous_question_json(output)
+
+            self.assertEqual(set(removed), set(stale))
+            self.assertTrue(all(not path.exists() for path in stale))
+            self.assertEqual(workbook.read_text(encoding="utf-8"), "keep")
+
     def test_last_approval_closes_review_window_without_another_dialog(self):
         question = Mock()
         question.local_id = "Q001"

@@ -274,6 +274,16 @@ class AIExamPreparerTests(unittest.TestCase):
             None,
             False,
         )
+        batch = self.root / "work" / "考试配置表_AI题目.json"
+        stale = [
+            batch,
+            batch.with_name(batch.stem + ".ai-original.json"),
+            batch.with_name(batch.stem + ".review-log.json"),
+            batch.with_suffix(".upload-state.json"),
+        ]
+        batch.parent.mkdir(parents=True, exist_ok=True)
+        for path in stale:
+            path.write_text("{}", encoding="utf-8")
 
         result = prepare_ai_exam_config(
             self.source,
@@ -286,6 +296,7 @@ class AIExamPreparerTests(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+        self.assertTrue(all(not path.exists() for path in stale))
 
     @patch(
         "ai_exam_preparer.upload_batch"
