@@ -756,7 +756,6 @@ import hashlib
 import os
 import tempfile
 from urllib.parse import urlparse, parse_qs
-from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 
 
@@ -1120,7 +1119,7 @@ def select_configured_questions(driver, config, already_selected=0):
         )
         if not chapter_rows(driver):
             course_link = course_path_element(driver, config, '.title.clickable')
-            course_link.click()
+            click_safely(driver, course_link)
         WebDriverWait(driver, 30).until(lambda d: len(chapter_rows(d)) > 0)
         course_path_element(driver, config, '.AGENT_COURSE-driver-anchor .title')
         matches = [row for row in chapter_rows(driver) if re.sub(r'\s*[（(]\d+[)）]\s*$', '', norm(row.text)) == chapter_name]
@@ -1129,7 +1128,10 @@ def select_configured_questions(driver, config, already_selected=0):
         total = count_badge(matches[0].text)
         if total is None or total == 0:
             raise RuntimeError(f'{chapter_name} 没有可核对的题目数量。')
-        matches[0].find_element(By.CSS_SELECTOR, '.content').click()
+        click_safely(
+            driver,
+            matches[0].find_element(By.CSS_SELECTOR, '.content'),
+        )
         # Fail closed if folders, pagination or lazy loading mean the chapter is incomplete.
         WebDriverWait(driver, 30).until(lambda d: len(question_rows(d)) == total and not chapter_rows(d))
         rows = question_rows(driver)
@@ -1143,9 +1145,8 @@ def select_configured_questions(driver, config, already_selected=0):
                 raise RuntimeError(f'唯一标识 {q.identifier} 匹配题目数量不是 1，停止选题。')
             control = row.find_element(By.CSS_SELECTOR, '.select')
             if 'active' not in control.get_attribute('class').split():
-                ActionChains(driver).move_to_element(row).perform()
                 WebDriverWait(driver, 10).until(lambda d: control.is_displayed())
-                control.click()
+                click_safely(driver, control)
             WebDriverWait(driver, 10).until(
                 lambda d: question_selected_by_identifier(d, q.identifier)
             )
