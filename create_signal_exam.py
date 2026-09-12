@@ -570,7 +570,7 @@ class Question:
     chapter: int
     chapter_name: str
     number: int
-    keyword: str
+    identifier: str
     score: Decimal | None
 
 
@@ -644,9 +644,9 @@ def load_config(path: Path, *, require_questions: bool = True) -> ExamConfig:
         if key in seen:
             raise ConfigError(f'重复题目：第 {chapter} 章第 {number} 题。')
         seen.add(key)
-        keyword = text(row[3])
-        if not keyword:
-            raise ConfigError(f'第 {index} 行请填写题干关键词，防止章内顺序变化后选错题。')
+        identifier = text(row[3])
+        if not re.fullmatch(r'\[\d{5}\]', identifier):
+            raise ConfigError(f'第 {index} 行请填写形如 [12345] 的五位唯一标识。')
         score = None
         if text(row[4]):
             try:
@@ -655,9 +655,9 @@ def load_config(path: Path, *, require_questions: bool = True) -> ExamConfig:
                 raise ConfigError(f'第 {index} 行分值不是数字。') from exc
             if not score.is_finite() or not 0 < score <= 1000 or score * 10 != (score * 10).to_integral_value():
                 raise ConfigError(f'第 {index} 行分值须大于 0、不超过 1000，最多一位小数。')
-        questions.append(Question(chapter, name, number, keyword, score))
+        questions.append(Question(chapter, name, number, identifier, score))
     if require_questions and not questions:
-        raise ConfigError('选题明细尚未填写：请逐行填写章节、章内顺序号和题干关键词。')
+        raise ConfigError('选题明细尚未填写：请逐行填写章节、章内顺序号、五位唯一标识和分值。')
     return ExamConfig(text(settings['考试名称']), text(settings['课程名称']), text(settings['课程ID']), text(settings['学期ID']), text(settings['参与班级']), start, end, release, method, tuple(questions))
 
 
@@ -678,10 +678,10 @@ def config_from_session(base: ExamConfig, session) -> ExamConfig:
     for index, record in enumerate(session.questions, start=1):
         chapter = _session_chapter_number(getattr(record, 'chapter', ''))
         number = getattr(record, 'question_number', None)
-        keyword = text(getattr(record, 'keyword', ''))
+        identifier = text(getattr(record, 'identifier', ''))
         raw_score = getattr(record, 'score', 0)
-        if number is None or not keyword:
-            raise ConfigError(f'Session 第 {index} 题缺少题库编号或关键词。')
+        if number is None or not re.fullmatch(r'\[\d{5}\]', identifier):
+            raise ConfigError(f'Session 第 {index} 题缺少题库编号或五位唯一标识。')
         number = positive_int(number, f'Session 第 {index} 题章内编号')
         key = chapter, number
         if key in seen:
@@ -694,7 +694,7 @@ def config_from_session(base: ExamConfig, session) -> ExamConfig:
         if not score.is_finite() or score <= 0:
             raise ConfigError(f'Session 第 {index} 题分值必须大于 0。')
         chapter_name = text(getattr(record, 'chapter', '')) or chapter_title(chapter)
-        questions.append(Question(chapter, chapter_name, number, keyword, score))
+        questions.append(Question(chapter, chapter_name, number, identifier, score))
     if not questions:
         raise ConfigError('Session 中没有可用于创建考试的题目。')
     return ExamConfig(
@@ -1011,10 +1011,10 @@ def selected_question_count(text_value):
     return int(match.group(1)) if match else None
 
 
-def question_selected_by_keyword(driver, keyword):
+def question_selected_by_identifier(driver, identifier):
     for row in question_rows(driver):
         try:
-            if keyword not in norm(row.text):
+            if identifier not in norm(row.text):
                 continue
             control = row.find_element(By.CSS_SELECTOR, '.select')
             if 'active' in control.get_attribute('class').split():
@@ -1083,17 +1083,17 @@ def select_configured_questions(driver, config, already_selected=0):
             if q.number > len(rows):
                 raise RuntimeError(f'{chapter_name} 只有 {len(rows)} 道题，无法选择第 {q.number} 题。')
             row = question_rows(driver)[q.number - 1]
-            if q.keyword not in norm(row.text):
-                raise RuntimeError(f'{chapter_name} 第 {q.number} 题与关键词“{q.keyword}”不符，停止选题。')
-            if sum(q.keyword in norm(r.text) for r in question_rows(driver)) != 1:
-                raise RuntimeError(f'关键词“{q.keyword}”匹配多道题，请填写更完整的题干片段。')
+            if q.identifier not in norm(row.text):
+                raise RuntimeError(f'{chapter_name} 第 {q.number} 题与唯一标识 {q.identifier} 不符，停止选题。')
+            if sum(q.identifier in norm(r.text) for r in question_rows(driver)) != 1:
+                raise RuntimeError(f'唯一标识 {q.identifier} 匹配题目数量不是 1，停止选题。')
             control = row.find_element(By.CSS_SELECTOR, '.select')
             if 'active' not in control.get_attribute('class').split():
                 ActionChains(driver).move_to_element(row).perform()
                 WebDriverWait(driver, 10).until(lambda d: control.is_displayed())
                 control.click()
             WebDriverWait(driver, 10).until(
-                lambda d: question_selected_by_keyword(d, q.keyword)
+                lambda d: question_selected_by_identifier(d, q.identifier)
             )
         click_visible_exact(driver, '完成选题', selectors='.base-button-component')
         selected += len(questions)
@@ -1110,9 +1110,9 @@ def ensure_configured_questions(driver, config):
         raise RuntimeError('草稿试题数量超过配置数量，停止自动修改。')
     for position, card in enumerate(cards):
         expected = config.questions[position]
-        if expected.keyword not in norm(card.text):
+        if expected.identifier not in norm(card.text):
             raise RuntimeError(
-                f'草稿第 {position + 1} 题与配置关键词“{expected.keyword}”不符，停止自动修改。'
+                f'草稿第 {position + 1} 题与唯一标识 {expected.identifier} 不符，停止自动修改。'
             )
     if len(cards) < len(config.questions):
         select_configured_questions(driver, config, already_selected=len(cards))
@@ -1125,16 +1125,16 @@ def finish_question_config(driver, config):
     if len(cards) != len(config.questions):
         raise RuntimeError('草稿试题数量与配置不一致，停止自动修改。')
     for position, (q, card) in enumerate(zip(config.questions, cards), start=1):
-        if q.keyword not in norm(card.text):
-            raise RuntimeError(f'组卷后第 {position} 题与关键词“{q.keyword}”不符。')
+        if q.identifier not in norm(card.text):
+            raise RuntimeError(f'组卷后第 {position} 题与唯一标识 {q.identifier} 不符。')
         field = card.find_element(By.CSS_SELECTOR, 'input[placeholder="输入分值"]')
         if q.score is not None:
             set_input(driver, field, str(q.score))
         raw = field.get_attribute('value')
         if not raw or Decimal(raw) <= 0:
-            raise RuntimeError(f'题目“{q.keyword}”没有正分值，请在配置表填写分值。')
+            raise RuntimeError(f'题目 {q.identifier} 没有正分值，请在配置表填写分值。')
         if q.score is not None and Decimal(raw) != q.score:
-            raise RuntimeError(f'题目“{q.keyword}”分值未正确写入。')
+            raise RuntimeError(f'题目 {q.identifier} 分值未正确写入。')
     click_visible_exact(driver, '确定', selectors='.base-button-component')
     WebDriverWait(driver, 30).until(lambda d: '/teach-exam/create/' in d.current_url)
     wait_for(driver, 'input[placeholder="请输入考试名称"]')
@@ -1265,7 +1265,7 @@ def prepare_exam(driver, config, state, state_path):
     if not state['exam_id']:
         raise RuntimeError('平台未返回考试编号，停止后续操作。')
     WebDriverWait(driver, 30).until(lambda d: re.search(r'题目数[:：]\s*\d+\s*道', body_text(d)))
-    print('步骤：按章节、顺序号和关键词选题并设置分值。', flush=True)
+    print('步骤：按章节、顺序号和五位唯一标识选题并设置分值。', flush=True)
     ensure_configured_questions(driver, config)
     # Returning from the question bank can reload stale form values.
     fill_schedule(driver, config)

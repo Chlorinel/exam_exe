@@ -11,7 +11,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 from responsive_wait import WebDriverWait
 
-from deepseek_question_generator import GeneratedQuestion, QuestionBatch
+from deepseek_question_generator import (
+    GeneratedQuestion,
+    QuestionBatch,
+    extract_question_identifier,
+)
 from exam_session import (
     all_uploaded as session_all_uploaded,
     load_session,
@@ -20,7 +24,6 @@ from exam_session import (
     update_status,
 )
 from platform_question_uploader import (
-    MATH_PATTERN,
     QuestionBankUploader,
     UploadConfig,
     UploadState,
@@ -39,7 +42,7 @@ class LocatedQuestion:
     chapter: int
     chapter_name: str
     number: int
-    keyword: str
+    identifier: str
     score: Decimal
     platform_id: str | None = None
 
@@ -204,122 +207,11 @@ def parse_chapter_number(chapter_name: str) -> int:
     )
 
 
-_MARKDOWN_MARKS = re.compile(
-    r"[*_`#>|~]+"
-)
-
-
-def plain_text_fragments(
-    markdown_latex: str,
-) -> list[str]:
-    """
-    只提取题干中的普通文本，不依赖平台如何渲染公式。
-
-    公式位置被切断为不同文本片段，避免把公式前后的文字
-    强行拼接成一个平台页面上不存在的连续字符串。
-    """
-    text = str(markdown_latex or "")
-
-    pieces: list[str] = []
-    cursor = 0
-
-    for match in MATH_PATTERN.finditer(text):
-        pieces.append(text[cursor:match.start()])
-        cursor = match.end()
-
-    pieces.append(text[cursor:])
-
-    result: list[str] = []
-
-    for piece in pieces:
-        piece = _MARKDOWN_MARKS.sub(
-            "",
-            piece,
-        )
-        for line in piece.splitlines():
-            normalized = normalize_text(line)
-            normalized = normalized.strip(
-                " ，,。；;：:、.!！？?（）()[]【】"
-            )
-            if normalized:
-                result.append(normalized)
-
-    return result
-
-
-def _candidate_keywords(
-    stem: str,
-    *,
-    min_length: int = 8,
-    max_length: int = 60,
-) -> list[str]:
-    """
-    从普通文字片段生成候选关键词。
-
-    第一版只取每个文字片段的前缀。
-    如果题干普通文字过短或所有前缀都不唯一，则直接停止，
-    不做复杂模糊匹配。
-    """
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    for fragment in plain_text_fragments(stem):
-        compact_length = len(
-            re.sub(r"\s+", "", fragment)
-        )
-        if compact_length < min_length:
-            continue
-
-        upper = min(
-            len(fragment),
-            max_length,
-        )
-
-        lengths = list(
-            range(
-                min(min_length, upper),
-                upper + 1,
-                4,
-            )
-        )
-        if upper not in lengths:
-            lengths.append(upper)
-
-        for length in lengths:
-            candidate = fragment[:length].strip()
-            if (
-                len(
-                    re.sub(
-                        r"\s+",
-                        "",
-                        candidate,
-                    )
-                )
-                < min_length
-            ):
-                continue
-
-            if candidate not in seen:
-                seen.add(candidate)
-                candidates.append(candidate)
-
-    return candidates
-
-
-def locate_row_and_keyword(
+def locate_row_by_identifier(
     stem: str,
     row_texts: list[str],
 ) -> tuple[int, str]:
-    """
-    返回：
-        (0-based 题目行位置, 唯一关键词)
-
-    关键词必须：
-    - 来自 AI 审核后的题干普通文字；
-    - 在当前章节题目列表里恰好匹配 1 道题。
-
-    找不到或不能唯一确认时直接报错。
-    """
+    """Locate one uploaded question by its exact trailing identifier."""
     normalized_rows = [
         normalize_text(text)
         for text in row_texts
@@ -330,27 +222,23 @@ def locate_row_and_keyword(
             "当前章节没有可定位的题目。"
         )
 
-    candidates = _candidate_keywords(stem)
-    if not candidates:
+    identifier = extract_question_identifier(stem)
+    if not identifier:
         raise ValueError(
-            "题干没有足够长的普通文字，"
-            "无法生成稳定的题干关键词。"
+            "题干末尾没有五位唯一标识，无法定位题目。"
         )
 
-    for keyword in candidates:
-        matches = [
-            index
-            for index, row_text
-            in enumerate(normalized_rows)
-            if keyword in row_text
-        ]
-
-        if len(matches) == 1:
-            return matches[0], keyword
+    matches = [
+        index
+        for index, row_text in enumerate(normalized_rows)
+        if identifier in row_text
+    ]
+    if len(matches) == 1:
+        return matches[0], identifier
 
     raise ValueError(
-        "无法用题干普通文字在当前章节唯一定位该题。"
-        "请确保题干包含具有辨识度的文字描述。"
+        f"五位唯一标识 {identifier} 在当前章节匹配到 "
+        f"{len(matches)} 道题，无法唯一定位。"
     )
 
 
@@ -480,7 +368,7 @@ def locate_uploaded_questions(
     不考虑其他人同时增删同一课程题库。
 
     因此这里只定位一次，得到：
-        章节 + 当前章内题号 + 唯一关键词 + 分值
+        章节 + 当前章内题号 + 五位唯一标识 + 分值
     """
     ensure_all_uploaded(
         batch,
@@ -520,8 +408,8 @@ def locate_uploaded_questions(
             used_indexes: set[int] = set()
 
             for question in questions:
-                row_index, keyword = (
-                    locate_row_and_keyword(
+                row_index, identifier = (
+                    locate_row_by_identifier(
                         question.stem,
                         row_texts,
                     )
@@ -544,7 +432,7 @@ def locate_uploaded_questions(
                     ),
                     chapter_name=chapter_name,
                     number=row_index + 1,
-                    keyword=keyword,
+                    identifier=identifier,
                     score=question.score,
                     platform_id=upload_state.questions[
                         question.local_id
@@ -571,7 +459,7 @@ def locate_uploaded_questions(
                 question.local_id,
                 chapter=question.chapter_name,
                 question_number=question.number,
-                keyword=question.keyword,
+                identifier=question.identifier,
                 platform_id=question.platform_id,
             )
         if not session_all_uploaded(session):

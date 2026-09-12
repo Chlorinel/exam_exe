@@ -41,11 +41,12 @@ class ExamSessionTests(unittest.TestCase):
             chapter="第二章",
             knowledge_point="卷积积分",
             difficulty="medium",
-            stem="计算卷积积分",
+            stem="计算卷积积分 [12345]",
             options=None,
             answer="1",
             explanation="测试解析",
             score=Decimal("10"),
+            identifier="[12345]",
         )
         batch = QuestionBatch(
             batch_id="batch-1",
@@ -76,7 +77,7 @@ class ExamSessionTests(unittest.TestCase):
                     knowledge_point="卷积积分",
                     question_type="计算题",
                     score=10,
-                    keyword="卷积",
+                    identifier="[12345]",
                     review_status="approved",
                     upload_status="uploaded",
                     question_number=15,
@@ -105,7 +106,7 @@ class ExamSessionTests(unittest.TestCase):
         self.assertEqual(question.chapter, "")
         self.assertEqual(question.knowledge_point, "")
         self.assertEqual(question.score, 0)
-        self.assertEqual(question.keyword, "")
+        self.assertEqual(question.identifier, "")
 
     def test_review_advances_only_when_every_question_is_approved(self):
         pending_batch = SimpleNamespace(
@@ -144,7 +145,7 @@ class ExamSessionTests(unittest.TestCase):
             "Q001",
             chapter="第二章",
             question_number=15,
-            keyword="卷积",
+            identifier="[12345]",
         )
         self.assertTrue(all_uploaded(session))
 
@@ -170,7 +171,7 @@ class ExamSessionTests(unittest.TestCase):
                     local_id="Q001",
                     chapter="第二章",
                     score=Decimal("10"),
-                    keyword="卷积",
+                    identifier="[12345]",
                     upload_status="uploaded",
                     question_number=15,
                 )

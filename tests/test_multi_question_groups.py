@@ -11,6 +11,7 @@ from deepseek_question_generator import (
     GeneratedQuestion,
     QuestionBatch,
     QuestionSpec,
+    extract_question_identifier,
     load_question_batch,
 )
 from question_review_gui_with_generation import batch_is_fully_approved
@@ -29,17 +30,19 @@ def make_spec(chapter: str, knowledge: str, question_type: str, count: int):
 
 
 def make_question(local_id: str, spec: QuestionSpec) -> GeneratedQuestion:
+    identifier = f"[{10000 + int(local_id[1:]):05d}]"
     return GeneratedQuestion(
         local_id=local_id,
         question_type=spec.question_type,
         chapter=spec.chapter,
         knowledge_point=spec.knowledge_point,
         difficulty=spec.difficulty,
-        stem=f"{spec.knowledge_point} 测试题",
+        stem=f"{spec.knowledge_point} 测试题 {local_id} {identifier}",
         options={"A": "1", "B": "2", "C": "3", "D": "4"},
         answer="A",
         explanation="选择 A。",
         score=Decimal("5"),
+        identifier=identifier,
         review_status="approved",
     )
 
@@ -85,6 +88,12 @@ class MultiQuestionGroupTests(unittest.TestCase):
             loaded = load_question_batch(output)
 
         self.assertEqual([q.local_id for q in combined.questions], ["Q001", "Q002", "Q003"])
+        identifiers = [
+            extract_question_identifier(q.stem)
+            for q in combined.questions
+        ]
+        self.assertTrue(all(identifiers))
+        self.assertEqual(len(identifiers), len(set(identifiers)))
         self.assertEqual(loaded.expected_question_count(), 3)
         self.assertEqual([s.chapter for s in loaded.all_specs()], ["第一章", "第二章"])
         self.assertTrue(batch_is_fully_approved(loaded))

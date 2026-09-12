@@ -80,10 +80,7 @@ class ConfigWriterTests(unittest.TestCase):
             chapter=chapter,
             chapter_name=f"第{chapter}章",
             number=number,
-            keyword=(
-                "AI_CONFIG_WRITER_"
-                "UNIQUE_KEYWORD"
-            ),
+            identifier="[48317]",
             score=Decimal("5"),
         )
 
@@ -145,11 +142,8 @@ class ConfigWriterTests(unittest.TestCase):
                 number,
             )
             self.assertEqual(
-                question.keyword,
-                (
-                    "AI_CONFIG_WRITER_"
-                    "UNIQUE_KEYWORD"
-                ),
+                question.identifier,
+                "[48317]",
             )
             self.assertEqual(
                 question.score,
@@ -169,7 +163,7 @@ class ConfigWriterTests(unittest.TestCase):
             chapter=chapter,
             chapter_name=f"第{chapter}章",
             number=number,
-            keyword="不会真的写入",
+            identifier="[58264]",
             score=Decimal("5"),
         )
 
@@ -190,7 +184,7 @@ class ConfigWriterTests(unittest.TestCase):
             chapter=chapter,
             chapter_name=f"第{chapter}章",
             number=number,
-            keyword="分值格式测试关键词",
+            identifier="[69375]",
             score=Decimal("5.25"),
         )
 
@@ -234,7 +228,7 @@ class ConfigWriterTests(unittest.TestCase):
                 existing.chapter_name
             ),
             number=existing.number,
-            keyword="重复位置测试关键词",
+            identifier="[71486]",
             score=Decimal("5"),
         )
 

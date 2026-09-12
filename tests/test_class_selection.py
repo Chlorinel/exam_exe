@@ -22,14 +22,14 @@ class ClassSelectionTests(unittest.TestCase):
         finish_mock: Mock,
     ) -> None:
         visible_mock.return_value = [
-            SimpleNamespace(text="first question"),
-            SimpleNamespace(text="second question"),
+            SimpleNamespace(text="first question [10001]"),
+            SimpleNamespace(text="second question [10002]"),
         ]
         config = SimpleNamespace(
             questions=[
-                SimpleNamespace(keyword="first"),
-                SimpleNamespace(keyword="second"),
-                SimpleNamespace(keyword="third"),
+                SimpleNamespace(identifier="[10001]"),
+                SimpleNamespace(identifier="[10002]"),
+                SimpleNamespace(identifier="[10003]"),
             ]
         )
         driver = Mock()
@@ -42,9 +42,9 @@ class ClassSelectionTests(unittest.TestCase):
     @patch("create_signal_exam.visible")
     def test_interrupted_selection_rejects_nonmatching_prefix(self, visible_mock: Mock) -> None:
         visible_mock.return_value = [SimpleNamespace(text="another question")]
-        config = SimpleNamespace(questions=[SimpleNamespace(keyword="expected")])
+        config = SimpleNamespace(questions=[SimpleNamespace(identifier="[10001]")])
 
-        with self.assertRaisesRegex(RuntimeError, "配置关键词"):
+        with self.assertRaisesRegex(RuntimeError, "唯一标识"):
             ensure_configured_questions(Mock(), config)
 
     def test_reads_question_selection_counter_with_spacing(self) -> None:

@@ -16,9 +16,8 @@ from platform_question_uploader import (
 )
 from ai_question_locator import (
     ensure_all_uploaded,
-    locate_row_and_keyword,
+    locate_row_by_identifier,
     parse_chapter_number,
-    plain_text_fragments,
 )
 
 
@@ -31,7 +30,7 @@ def sample_question() -> GeneratedQuestion:
         difficulty="medium",
         stem=(
             r"已知连续时间信号 \(x(t)\)，"
-            r"求该信号与单位阶跃信号卷积后的结果。"
+            r"求该信号与单位阶跃信号卷积后的结果。 [48317]"
         ),
         options={
             "A": "1",
@@ -42,6 +41,7 @@ def sample_question() -> GeneratedQuestion:
         answer="A",
         explanation="测试解析。",
         score=Decimal("5"),
+        identifier="[48317]",
         review_status="approved",
     )
 
@@ -86,53 +86,28 @@ class ChapterNumberTests(unittest.TestCase):
         )
 
 
-class TextLocatorTests(unittest.TestCase):
-    def test_formula_is_not_required_for_matching(self):
-        fragments = plain_text_fragments(
-            r"已知连续时间信号 \(x(t)\)，求系统输出。"
-        )
-
-        self.assertIn(
-            "已知连续时间信号",
-            fragments,
-        )
-        self.assertIn(
-            "求系统输出",
-            fragments,
-        )
-
-    def test_locates_unique_row_and_keyword(self):
+class IdentifierLocatorTests(unittest.TestCase):
+    def test_locates_exact_unique_identifier(self):
         row_texts = [
-            "已知离散时间信号 x[n]，求其周期。",
+            "已知离散时间信号 x[n]，求其周期。 [18264]",
             (
                 "已知连续时间信号 x(t)，"
-                "求该信号与单位阶跃信号卷积后的结果。"
+                "求该信号与单位阶跃信号卷积后的结果。 [48317]"
             ),
-            "判断系统是否为线性系统。",
+            "判断系统是否为线性系统。 [73159]",
         ]
 
-        index, keyword = locate_row_and_keyword(
+        index, identifier = locate_row_by_identifier(
             sample_question().stem,
             row_texts,
         )
 
         self.assertEqual(index, 1)
-        self.assertIn(
-            keyword,
-            row_texts[1],
-        )
-        self.assertNotIn(
-            keyword,
-            row_texts[0],
-        )
-        self.assertNotIn(
-            keyword,
-            row_texts[2],
-        )
+        self.assertEqual(identifier, "[48317]")
 
-    def test_rejects_question_without_enough_plain_text(self):
+    def test_rejects_question_without_identifier(self):
         with self.assertRaises(ValueError):
-            locate_row_and_keyword(
+            locate_row_by_identifier(
                 r"\[x(t)=e^{-t}u(t)\]",
                 [
                     "x(t)=e^-t u(t)",
@@ -140,13 +115,13 @@ class TextLocatorTests(unittest.TestCase):
                 ],
             )
 
-    def test_rejects_non_unique_text(self):
+    def test_rejects_duplicate_identifier(self):
         with self.assertRaises(ValueError):
-            locate_row_and_keyword(
-                "已知连续时间信号并回答下列问题",
+            locate_row_by_identifier(
+                "第一道题 [48317]",
                 [
-                    "已知连续时间信号并回答下列问题 A",
-                    "已知连续时间信号并回答下列问题 B",
+                    "第一道题 [48317]",
+                    "第二道题 [48317]",
                 ],
             )
 

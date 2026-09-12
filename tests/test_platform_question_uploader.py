@@ -46,11 +46,12 @@ def sample_question() -> GeneratedQuestion:
         chapter="第一章",
         knowledge_point="系统性质",
         difficulty="medium",
-        stem=r"已知 \(x(t)\)，求输出。",
+        stem=r"已知 \(x(t)\)，求输出。 [12345]",
         options={"A": "1", "B": "2", "C": "3", "D": "4"},
         answer="B",
         explanation=r"由 \[y(t)=2x(t)\] 可得。",
         score=Decimal("5"),
+        identifier="[12345]",
         review_status="approved",
     )
 
@@ -235,7 +236,8 @@ class UploadBatchTests(unittest.TestCase):
             second_question = replace(
                 question,
                 local_id="q-2",
-                stem=r"已知 \(h(t)\)，求响应。",
+                stem=r"已知 \(h(t)\)，求响应。 [67890]",
+                identifier="[67890]",
             )
             batch = QuestionBatch(
                 batch_id="batch-upload-test",

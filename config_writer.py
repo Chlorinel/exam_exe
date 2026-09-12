@@ -92,8 +92,8 @@ def _validate_located_question(
     chapter_name = _clean_text(
         question.chapter_name
     )
-    keyword = _clean_text(
-        question.keyword
+    identifier = _clean_text(
+        question.identifier
     )
 
     try:
@@ -119,9 +119,9 @@ def _validate_located_question(
             f"{question.local_id} 缺少章节名称。"
         )
 
-    if not keyword:
+    if not re.fullmatch(r"\[\d{5}\]", identifier):
         raise ConfigWriteError(
-            f"{question.local_id} 缺少题干关键词。"
+            f"{question.local_id} 缺少有效的五位唯一标识。"
         )
 
     # 与 create_signal_exam.load_config() 当前分值规则保持一致：
@@ -143,7 +143,7 @@ def _validate_located_question(
         chapter,
         chapter_name,
         number,
-        keyword,
+        identifier,
         score,
     )
 
@@ -340,6 +340,28 @@ def _add_string_cell(
     text_node.text = value
 
 
+def _set_inline_string_cell(
+    sheet_data: ET.Element,
+    reference: str,
+    value: str,
+) -> None:
+    for row in sheet_data.findall(_qname(MAIN_NS, "row")):
+        for cell in row.findall(_qname(MAIN_NS, "c")):
+            if cell.get("r") != reference:
+                continue
+            style = cell.get("s")
+            cell.clear()
+            cell.set("r", reference)
+            cell.set("t", "inlineStr")
+            if style is not None:
+                cell.set("s", style)
+            inline = ET.SubElement(cell, _qname(MAIN_NS, "is"))
+            text_node = ET.SubElement(inline, _qname(MAIN_NS, "t"))
+            text_node.text = value
+            return
+    raise ConfigWriteError(f"“选题明细”缺少单元格 {reference}。")
+
+
 def _add_number_cell(
     row: ET.Element,
     reference: str,
@@ -485,6 +507,12 @@ def _append_questions_xml(
             "“选题明细”缺少表头行。"
         )
 
+    _set_inline_string_cell(
+        sheet_data,
+        "D1",
+        "五位唯一标识（核对用）",
+    )
+
     styles = _column_styles(
         sheet_data
     )
@@ -495,7 +523,7 @@ def _append_questions_xml(
         chapter,
         chapter_name,
         number,
-        keyword,
+        identifier,
         score,
     ) in questions:
         row = ET.SubElement(
@@ -525,7 +553,7 @@ def _append_questions_xml(
         _add_string_cell(
             row,
             f"D{next_row}",
-            keyword,
+            identifier,
             style=styles.get("D"),
         )
         _add_number_cell(
@@ -628,7 +656,7 @@ def _verify_output(
             chapter,
             chapter_name,
             number,
-            keyword,
+            identifier,
             score,
         ) = expected
 
@@ -639,8 +667,8 @@ def _verify_output(
             != chapter_name
             or actual.number
             != number
-            or actual.keyword
-            != keyword
+            or actual.identifier
+            != identifier
             or actual.score
             != score
         ):
