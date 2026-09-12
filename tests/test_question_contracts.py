@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from deepseek_question_generator import (
     QuestionBatch,
     QuestionSpec,
     load_question_batch,
+    parse_generated_questions,
     save_question_batch,
     validate_batch_duplicates,
 )
@@ -94,6 +96,64 @@ class QuestionContractTests(unittest.TestCase):
     def test_duplicate_stems_are_detected(self):
         questions = [sample_question(), sample_question(stem="  题干   \\(x(t)\\)  ")]
         self.assertEqual(validate_batch_duplicates(questions)[0][0], 1)
+
+    def test_parser_removes_one_extra_latex_escape_layer(self):
+        spec = QuestionSpec(
+            course_name="信号与系统",
+            chapter="第二章",
+            knowledge_point="周期信号",
+            question_type="计算题",
+            count=1,
+            score=10,
+        )
+        response = {
+            "questions": [
+                {
+                    "type": "计算题",
+                    "chapter": "第二章",
+                    "knowledge_point": "周期信号",
+                    "difficulty": "medium",
+                    "question": (
+                        r"计算 \\(\\frac{1}{2}\\)，并保留正确公式 "
+                        r"\(y=1\)"
+                    ),
+                    "options": None,
+                    "answer": r"\\(\\frac{1}{2}\\)",
+                    "explanation": (
+                        r"\\(\\begin{matrix}a&b\\\\c&d"
+                        r"\\end{matrix}\\)"
+                    ),
+                    "score": 10,
+                }
+            ]
+        }
+
+        question = parse_generated_questions(
+            json.dumps(response, ensure_ascii=False),
+            spec,
+        )[0]
+
+        self.assertEqual(
+            question.stem,
+            r"计算 \(\frac{1}{2}\)，并保留正确公式 \(y=1\)",
+        )
+        self.assertEqual(question.answer, r"\(\frac{1}{2}\)")
+        self.assertEqual(
+            question.explanation,
+            r"\(\begin{matrix}a&b\\c&d\end{matrix}\)",
+        )
+
+    def test_loading_old_batch_normalizes_overescaped_latex(self):
+        question = sample_question(stem=r"题干 \\(x=\\frac{1}{2}\\)")
+        question.explanation = r"解析 \\(x=1\\)"
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "questions.json"
+            save_question_batch(path, sample_batch([question]))
+            loaded = load_question_batch(path).questions[0]
+
+        self.assertEqual(loaded.stem, r"题干 \(x=\frac{1}{2}\)")
+        self.assertEqual(loaded.explanation, r"解析 \(x=1\)")
 
 
 if __name__ == "__main__":
