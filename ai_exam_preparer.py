@@ -25,6 +25,7 @@ from platform_question_uploader import (
     upload_batch,
 )
 from question_review_gui_with_generation import (
+    clear_previous_question_json,
     generate_and_review_questions,
     question_batch_file_is_approved,
 )
@@ -165,6 +166,16 @@ def prepare_ai_exam_config(
         # DeepSeek again and producing different questions.
         reviewed_batch_path, approved = batch_path, True
     else:
+        # The GUI repeats this after its form is submitted. Keeping the cleanup
+        # here also covers integrations that replace the GUI entry point.
+        clear_previous_question_json(batch_path)
+        if upload_state_path is not None:
+            explicit_upload_state = Path(upload_state_path).resolve()
+            if explicit_upload_state != batch_path.with_suffix(".upload-state.json"):
+                try:
+                    explicit_upload_state.unlink()
+                except FileNotFoundError:
+                    pass
         # 生成窗口负责收集 QuestionSpec；
         # 审核窗口负责逐题人工确认。
         generation_result = generate_and_review_questions(

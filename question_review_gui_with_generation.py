@@ -481,6 +481,25 @@ def _atomic_write_json(path: Path, data: Any) -> None:
             os.unlink(tmp)
 
 
+def clear_previous_question_json(output_path: Path) -> list[Path]:
+    """Remove JSON artifacts from an earlier generation using the same output name."""
+    output_path = Path(output_path).resolve()
+    candidates = (
+        output_path,
+        output_path.with_name(output_path.stem + ".ai-original" + output_path.suffix),
+        output_path.with_name(output_path.stem + ".review-log.json"),
+        output_path.with_suffix(".upload-state.json"),
+    )
+    removed = []
+    for path in candidates:
+        try:
+            path.unlink()
+            removed.append(path)
+        except FileNotFoundError:
+            continue
+    return removed
+
+
 class ReviewAudit:
     def __init__(self, batch_path: Path):
         self.batch_path = Path(batch_path)
@@ -952,6 +971,10 @@ class QuestionGenerationDialog(QDialog):
                 self.output_edit.setText(
                     str(output_path)
                 )
+
+            # Delete the prior question JSON set immediately before a fresh
+            # DeepSeek run. Closing the dialog before this point keeps it.
+            clear_previous_question_json(output_path)
 
             config = DeepSeekWebConfig(
                 profile_dir=profile_dir,
