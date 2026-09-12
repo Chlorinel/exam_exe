@@ -74,7 +74,7 @@ def prepare_ai_exam_config(
         -> 审核门禁复核
         -> 上传课程题库
         -> 确认全部 uploaded
-        -> 定位章内题号和关键词
+        -> 按五位唯一标识定位章内题号
         -> 生成 *_AI完成.xlsx
         -> 再次调用现有 load_config() 验证
 
@@ -304,7 +304,10 @@ def prepare_ai_exam_config(
         record.question_number = getattr(
             q, "question_number", getattr(q, "number", record.question_number)
         )
-        record.keyword = str(getattr(q, "keyword", record.keyword) or record.keyword)
+        record.identifier = str(
+            getattr(q, "identifier", record.identifier)
+            or record.identifier
+        )
         record.score = float(getattr(q, "score", record.score) or record.score)
         record.upload_status = "uploaded"
         record.platform_id = getattr(q, "platform_id", record.platform_id)

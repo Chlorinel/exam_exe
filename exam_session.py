@@ -31,7 +31,7 @@ class ExamQuestionRecord:
     knowledge_point: str = ""
     question_type: str = ""
     score: float = 0.0
-    keyword: str = ""
+    identifier: str = ""
     review_status: str = "pending"
     upload_status: str = "pending"
     question_number: int | None = None
@@ -51,7 +51,7 @@ class ExamQuestionRecord:
             knowledge_point=str(getattr(question, "knowledge_point", "") or ""),
             question_type=str(getattr(question, "question_type", "") or ""),
             score=score,
-            keyword=str(getattr(question, "keyword", "") or ""),
+            identifier=str(getattr(question, "identifier", "") or ""),
             review_status=str(getattr(question, "review_status", "pending") or "pending"),
         )
 
@@ -122,7 +122,7 @@ def sync_review_from_batch(session: ExamSession, batch: Any) -> bool:
             fresh.upload_status = old.upload_status
             fresh.question_number = old.question_number
             fresh.platform_id = old.platform_id
-            fresh.keyword = old.keyword or fresh.keyword
+            fresh.identifier = old.identifier or fresh.identifier
         synced.append(fresh)
     session.questions = synced
     approved = bool(synced) and all(question.review_status == "approved" for question in synced)
@@ -152,13 +152,13 @@ def update_question_location(
     *,
     chapter: str,
     question_number: int,
-    keyword: str,
+    identifier: str,
     platform_id: str | None = None,
 ) -> None:
     question = find_question(session, local_id)
     question.chapter = str(chapter)
     question.question_number = int(question_number)
-    question.keyword = str(keyword)
+    question.identifier = str(identifier)
     question.upload_status = "uploaded"
     if platform_id is not None:
         question.platform_id = str(platform_id)
@@ -168,7 +168,7 @@ def all_uploaded(session: ExamSession) -> bool:
     return bool(session.questions) and all(
         question.upload_status == "uploaded"
         and question.question_number is not None
-        and bool(question.keyword)
+        and bool(question.identifier)
         for question in session.questions
     )
 

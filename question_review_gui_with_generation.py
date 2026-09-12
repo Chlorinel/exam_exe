@@ -104,6 +104,7 @@ from deepseek_question_generator import (
     QuestionBatch,
     load_question_batch,
     save_question_batch,
+    validate_batch_duplicates,
     validate_question,
 )
 from exam_session import (
@@ -148,6 +149,9 @@ def batch_is_fully_approved(batch: QuestionBatch) -> bool:
             return False
         if q.review_status != STATUS_APPROVED:
             return False
+
+    if validate_batch_duplicates(batch.questions):
+        return False
 
     return True
 
@@ -1523,6 +1527,7 @@ class QuestionReviewWindow(QMainWindow):
             answer=self.answer_edit.text().strip(),
             explanation=self.explanation_edit.toPlainText().strip(),
             score=score,
+            identifier=original.identifier,
             content_format=original.content_format,
             review_status=original.review_status,
             edited_by_user=original.edited_by_user,

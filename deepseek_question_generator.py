@@ -42,6 +42,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import tempfile
 import time
 import uuid
@@ -65,6 +66,7 @@ from responsive_wait import WebDriverWait, responsive_sleep
 
 
 CONTENT_FORMAT = "markdown_latex"
+QUESTION_IDENTIFIER_PATTERN = re.compile(r"\[(\d{5})\]\s*$")
 
 
 _OVERESCAPED_LATEX_SEGMENTS = (
@@ -97,6 +99,40 @@ def normalize_latex_escaping(value: str) -> str:
         )
 
     return normalized
+
+
+def extract_question_identifier(stem: str) -> str:
+    """Return the exact trailing five-digit question identifier."""
+    match = QUESTION_IDENTIFIER_PATTERN.search(str(stem or ""))
+    return f"[{match.group(1)}]" if match else ""
+
+
+def _stem_without_identifier(stem: str) -> str:
+    return QUESTION_IDENTIFIER_PATTERN.sub("", str(stem or "")).rstrip()
+
+
+def assign_question_identifiers(
+    questions: Iterable["GeneratedQuestion"],
+) -> None:
+    """Ensure every question ends with a unique locally generated identifier."""
+    items = list(questions)
+    used: set[str] = set()
+
+    for question in items:
+        identifier = extract_question_identifier(question.stem)
+        if not identifier or identifier in used:
+            while True:
+                identifier = f"[{secrets.randbelow(90000) + 10000:05d}]"
+                if identifier not in used:
+                    break
+        used.add(identifier)
+        question.identifier = identifier
+        question.stem = (
+            f"{_stem_without_identifier(question.stem)} {identifier}"
+        ).strip()
+
+    for question in items:
+        question.validation_errors = validate_question(question)
 
 
 DEFAULT_CHAT_URL = "https://chat.deepseek.com/"
@@ -154,6 +190,7 @@ class GeneratedQuestion:
     answer: str
     explanation: str
     score: Decimal
+    identifier: str = ""
 
     content_format: str = CONTENT_FORMAT
     review_status: str = "pending"
@@ -178,6 +215,10 @@ class GeneratedQuestion:
                 str(key): normalize_latex_escaping(text)
                 for key, text in value["options"].items()
             }
+        if not value.get("identifier"):
+            value["identifier"] = extract_question_identifier(
+                value.get("stem", "")
+            )
         return cls(**value)
 
 
@@ -352,6 +393,7 @@ def build_generation_prompt(spec: QuestionSpec) -> str:
 12. 只能输出合法 JSON；禁止 Markdown 代码块、前言、结尾说明。
 13. JSON 字符串里的 LaTeX 反斜杠必须正确转义，而且只能转义一层。
 14. 按你实际输出的 JSON 原文计数，公式分隔符和 LaTeX 命令开头的一个反斜杠必须写成恰好两个连续反斜杠；禁止重复转义成四个。只有 LaTeX 本身需要两个反斜杠的矩阵换行符例外。
+15. 不要自行在题干末尾添加方括号编号；程序解析后会自动追加五位唯一标识。
 
 正确示例（这是要直接输出的 JSON 原文）：
 "question": {latex_json_example}
@@ -837,6 +879,18 @@ def parse_regenerated_question(
     question.review_status = "pending"
     question.edited_by_user = False
     question.platform_question_id = None
+    identifier = (
+        original.identifier
+        or extract_question_identifier(original.stem)
+    )
+    if identifier:
+        question.identifier = identifier
+        question.stem = (
+            f"{_stem_without_identifier(question.stem)} {identifier}"
+        ).strip()
+        question.validation_errors = validate_question(question)
+    else:
+        assign_question_identifiers([question])
     return question
 
 
@@ -889,6 +943,11 @@ def validate_question(question: GeneratedQuestion) -> list[str]:
         errors.append("分值必须大于 0。")
 
     errors.extend(_latex_delimiter_errors(question.stem, "题干"))
+    trailing_identifier = extract_question_identifier(question.stem)
+    if not trailing_identifier:
+        errors.append("题干末尾缺少五位唯一标识，例如 [12345]。")
+    elif question.identifier != trailing_identifier:
+        errors.append("题干末尾的五位唯一标识与题目记录不一致。")
     errors.extend(
         _latex_delimiter_errors(
             question.explanation,
@@ -935,13 +994,14 @@ def validate_batch_duplicates(
     questions: Iterable[GeneratedQuestion],
 ) -> list[tuple[int, str]]:
     seen: dict[str, int] = {}
+    identifiers: dict[str, int] = {}
     errors: list[tuple[int, str]] = []
 
     for index, question in enumerate(questions):
         key = re.sub(
             r"\s+",
             " ",
-            question.stem,
+            _stem_without_identifier(question.stem),
         ).strip().casefold()
 
         if not key:
@@ -956,6 +1016,18 @@ def validate_batch_duplicates(
             )
         else:
             seen[key] = index
+
+        identifier = extract_question_identifier(question.stem)
+        if identifier in identifiers:
+            errors.append(
+                (
+                    index,
+                    f"五位唯一标识与 Q{identifiers[identifier] + 1:03d} 重复："
+                    f"{identifier}",
+                )
+            )
+        elif identifier:
+            identifiers[identifier] = index
 
     return errors
 
@@ -1789,6 +1861,7 @@ return (
                 raw_response,
                 spec,
             )
+            assign_question_identifiers(questions)
         except Exception as exc:
             if output_path is not None:
                 debug_path = save_raw_response_debug(
@@ -1860,6 +1933,8 @@ return (
             for question in result.questions:
                 question.local_id = f"Q{len(questions) + 1:03d}"
                 questions.append(question)
+
+        assign_question_identifiers(questions)
 
         batch = QuestionBatch(
             batch_id=f"B-{uuid.uuid4().hex[:12]}",
