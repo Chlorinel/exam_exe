@@ -476,6 +476,7 @@ class WindowsTaskTests(unittest.TestCase):
         mode = type("Element", (), {"get_attribute": lambda self, name: "pl-button--primary"})()
         custom = type("Element", (), {"get_attribute": lambda self, name: "pl-button"})()
         configure = object()
+        driver = Mock()
 
         def elements(driver, label, selector):
             if label == "选题考试":
@@ -486,13 +487,18 @@ class WindowsTaskTests(unittest.TestCase):
                 return [configure]
             return []
 
-        with patch.object(create_signal_exam, "exact_text_elements", side_effect=elements), patch.object(
-            create_signal_exam, "click_safely"
-        ) as click:
-            selected = create_signal_exam.activate_question_exam_mode(object())
+        with patch.object(
+            create_signal_exam,
+            "exact_text_elements",
+            side_effect=elements,
+        ):
+            selected = create_signal_exam.activate_question_exam_mode(driver)
 
         self.assertIs(selected, configure)
-        click.assert_called_once_with(unittest.mock.ANY, mode)
+        driver.execute_script.assert_called_once_with(
+            "arguments[0].click();",
+            mode,
+        )
 
     def test_duplicate_course_labels_use_url_course_identity(self):
         first = type("Element", (), {"text": "信号与系统"})()

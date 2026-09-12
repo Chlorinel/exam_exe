@@ -394,23 +394,6 @@ def normalize_question_numbers(values: list[int] | None) -> list[int]:
     return result
 
 
-def open_question_config_page(driver: webdriver.Edge) -> None:
-    """Switch the create page to 选题考试 and open its question configurator."""
-    wait_route_idle(driver)
-    mode = exact_text_elements(driver, "选题考试", "button")
-    if not mode:
-        raise RuntimeError("创建考试页面没有找到“选题考试”按钮。")
-    if "pl-button--primary" not in (mode[-1].get_attribute("class") or ""):
-        click_safely(driver, mode[-1])
-    WebDriverWait(driver, 20).until(
-        lambda d: bool(exact_text_elements(d, "配置试题", "button"))
-    )
-    wait_route_idle(driver)
-    click_exact_text(driver, "配置试题", selectors="button", timeout=20)
-    WebDriverWait(driver, 30).until(lambda d: "/questionbank-hub/config-question/" in d.current_url)
-    wait_route_idle(driver, 30)
-
-
 def select_questions_from_question_bank(driver: webdriver.Edge, question_numbers: list[int]) -> None:
     """Select arbitrary 1-based question positions from the visible course question bank."""
     open_question_config_page(driver)
@@ -847,7 +830,10 @@ def activate_question_exam_mode(driver):
     # pl-button--primary is also used as a visual style on this page, so it is
     # not reliable before interaction. Always perform the click, then compare
     # both mutually exclusive mode buttons and require a unique edit control.
-    click_safely(driver, question_mode)
+    # Trigger the actual DOM control directly. This does not depend on browser
+    # zoom, window position, or pointer coordinates, and avoids a transparent
+    # loading/guide layer swallowing the mode switch.
+    driver.execute_script("arguments[0].click();", question_mode)
 
     def selected_question_control(current):
         question = exact_text_elements(current, '选题考试', 'button')
