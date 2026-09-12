@@ -51,6 +51,7 @@ def prepare_user_installation(root: Path) -> Path:
         if not template.is_file():
             raise ConfigWriteError(f"找不到考试配置模板：{template}")
         shutil.copy2(template, config)
+    update_config_identifier_header(config)
     (root / "work").mkdir(parents=True, exist_ok=True)
     return config
 
@@ -575,6 +576,46 @@ def _append_questions_xml(
         encoding="utf-8",
         xml_declaration=True,
     )
+
+
+def update_config_identifier_header(path: Path) -> Path:
+    """Migrate an existing user workbook without changing its entered values."""
+    path = Path(path).resolve()
+    handle, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.stem}.",
+        suffix=".xlsx",
+        dir=path.parent,
+    )
+    os.close(handle)
+    temporary_path = Path(temporary_name)
+
+    try:
+        with ZipFile(path, "r") as source_archive:
+            worksheet_member = _worksheet_member(source_archive, SHEET_NAME)
+            modified_worksheet = _append_questions_xml(
+                source_archive.read(worksheet_member),
+                [],
+            )
+            with ZipFile(
+                temporary_path,
+                "w",
+                compression=ZIP_DEFLATED,
+            ) as output_archive:
+                for info in source_archive.infolist():
+                    data = (
+                        modified_worksheet
+                        if info.filename == worksheet_member
+                        else source_archive.read(info.filename)
+                    )
+                    output_archive.writestr(info, data)
+        os.replace(temporary_path, path)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    return path
 
 
 def _base_config_dict(

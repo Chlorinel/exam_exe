@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import tempfile
 import unittest
+from zipfile import ZipFile
 from decimal import Decimal
 from pathlib import Path
 
@@ -48,15 +49,19 @@ class ConfigWriterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             template = root / "考试配置模板.xlsx"
-            template.write_bytes(b"template")
+            template.write_bytes(TEMPLATE.read_bytes())
 
             config = prepare_user_installation(root)
-            self.assertEqual(config.read_bytes(), b"template")
             self.assertTrue((root / "work").is_dir())
+            with ZipFile(config, "r") as archive:
+                worksheet = archive.read(
+                    "xl/worksheets/sheet2.xml"
+                ).decode("utf-8")
+            self.assertIn("五位唯一标识（核对用）", worksheet)
 
-            config.write_bytes(b"user-edited")
+            original = config.read_bytes()
             prepare_user_installation(root)
-            self.assertEqual(config.read_bytes(), b"user-edited")
+            self.assertEqual(config.read_bytes(), original)
 
     def setUp(self):
         if not TEMPLATE.exists():
