@@ -7,10 +7,14 @@ import tempfile
 import unittest
 
 from create_signal_exam import (
+    ExamConfig,
+    Question,
     load_state,
     resolve_run_state_path,
     state_fingerprint,
 )
+from datetime import datetime
+from decimal import Decimal
 
 
 def config(name: str, summary: str):
@@ -21,6 +25,101 @@ def config(name: str, summary: str):
 
 
 class RunStateTests(unittest.TestCase):
+    def test_excel_config_gets_a_fingerprint_scoped_state_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = config('考试', 'settings')
+
+            result = resolve_run_state_path(
+                None,
+                root / '考试配置表.xlsx',
+                None,
+                None,
+                current,
+            )
+
+        self.assertEqual(
+            result,
+            root / 'work' / 'exam-run-states' / f'excel-{state_fingerprint(current)}.state.json',
+        )
+
+    def test_changed_excel_config_does_not_reuse_old_completed_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            legacy = root / '考试配置表.state.json'
+            legacy.write_text(
+                json.dumps(
+                    {
+                        'config_fingerprint': state_fingerprint(config('旧考试', 'old settings')),
+                        'status': 'grades_published',
+                        'exam_id': '123456',
+                    }
+                ),
+                encoding='utf-8',
+            )
+            current = config('新考试', 'new settings')
+
+            result = resolve_run_state_path(
+                None,
+                root / '考试配置表.xlsx',
+                None,
+                None,
+                current,
+            )
+
+        self.assertFalse(result.exists())
+        self.assertNotEqual(result, legacy)
+
+    def test_matching_legacy_excel_state_is_migrated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            current = config('考试', 'settings')
+            legacy = root / '考试配置表.state.json'
+            legacy.write_text(
+                json.dumps(
+                    {
+                        'config_fingerprint': state_fingerprint(current),
+                        'status': 'saved',
+                        'exam_id': '123456',
+                    }
+                ),
+                encoding='utf-8',
+            )
+
+            result = resolve_run_state_path(
+                None,
+                root / '考试配置表.xlsx',
+                None,
+                None,
+                current,
+            )
+            migrated = json.loads(result.read_text(encoding='utf-8'))
+
+        self.assertEqual(migrated['exam_id'], '123456')
+
+    def test_legacy_question_number_is_not_part_of_fingerprint(self):
+        shared = dict(
+            exam_name='考试',
+            course_name='课程',
+            course_id='course',
+            term_id='term',
+            class_code='class',
+            start=datetime(2026, 9, 12, 10, 0),
+            end=datetime(2026, 9, 12, 11, 0),
+            release_at=None,
+            release_method='人工发布',
+        )
+        first = ExamConfig(
+            **shared,
+            questions=(Question(1, '第一章', 1, '[12345]', Decimal('10')),),
+        )
+        second = ExamConfig(
+            **shared,
+            questions=(Question(1, '第一章', 999, '[12345]', Decimal('10')),),
+        )
+
+        self.assertEqual(state_fingerprint(first), state_fingerprint(second))
+
     def test_changed_config_resets_unused_state(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'exam.state.json'
@@ -45,7 +144,7 @@ class RunStateTests(unittest.TestCase):
         self.assertEqual(state['config_fingerprint'], state_fingerprint(current))
         self.assertNotIn('last_error', state)
 
-    def test_changed_config_keeps_state_that_has_platform_exam(self):
+    def test_changed_config_resets_state_even_if_it_has_platform_exam(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'exam.state.json'
             path.write_text(
@@ -59,8 +158,11 @@ class RunStateTests(unittest.TestCase):
                 encoding='utf-8',
             )
 
-            with self.assertRaisesRegex(RuntimeError, '配置表已改变'):
-                load_state(path, config('新考试', 'new settings'))
+            state = load_state(path, config('新考试', 'new settings'))
+
+        self.assertEqual(state['status'], 'new')
+        self.assertNotIn('exam_id', state)
+        self.assertEqual(state['exam_name'], '新考试')
 
     def test_each_session_gets_its_own_state_path(self):
         with tempfile.TemporaryDirectory() as directory:
