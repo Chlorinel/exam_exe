@@ -33,14 +33,14 @@ class WindowsTaskTests(unittest.TestCase):
 
         self.assertIn("--manual-release-prompt", command)
         self.assertNotIn("--release-grades", command)
-        self.assertIn("--headless", command)
+        self.assertNotIn("--headless", command)
         self.assertIn(str(Path("exam.state.json").resolve()), command)
         self.assertIn(
             str(Path("work/current_exam_session.json").resolve()),
             command,
         )
 
-    def test_scheduled_release_failure_opens_manual_confirmation_terminal(self):
+    def test_scheduled_release_failure_opens_recovery_choice_dialog(self):
         args = SimpleNamespace(
             release_grades=True,
             manual_release_prompt=False,
@@ -56,12 +56,45 @@ class WindowsTaskTests(unittest.TestCase):
             side_effect=failure,
         ), patch.object(
             create_signal_exam,
-            "launch_manual_release_terminal",
-        ) as launch:
+            "show_release_failure_dialog",
+            return_value="retry",
+        ) as dialog:
             result = create_signal_exam.main()
 
         self.assertEqual(result, 1)
-        launch.assert_called_once_with(args, "RuntimeError: network unavailable")
+        dialog.assert_called_once_with(args, "RuntimeError: network unavailable")
+
+    def test_headless_edge_crash_retries_with_offscreen_window(self):
+        driver = Mock()
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            create_signal_exam.webdriver,
+            "Edge",
+            side_effect=[
+                create_signal_exam.WebDriverException(
+                    "session not created: DevToolsActivePort file doesn't exist"
+                ),
+                driver,
+            ],
+        ) as edge, patch.object(create_signal_exam, "install_guidance_hook"):
+            result = create_signal_exam.launch_driver(Path(directory), True)
+
+        self.assertIs(result, driver)
+        first = edge.call_args_list[0].kwargs["options"].arguments
+        second = edge.call_args_list[1].kwargs["options"].arguments
+        self.assertIn("--headless=new", first)
+        self.assertIn("--window-position=-32000,-32000", second)
+
+    def test_scheduled_release_defaults_to_state_side_log(self):
+        args = SimpleNamespace(
+            release_grades=True,
+            state=Path("work/exam.state.json"),
+            log_file=None,
+        )
+
+        self.assertEqual(
+            create_signal_exam.release_log_path(args),
+            Path("work/exam.state.release.log").resolve(),
+        )
 
     def test_manual_terminal_requires_yes_before_running_release(self):
         args = SimpleNamespace(
@@ -251,6 +284,21 @@ class WindowsTaskTests(unittest.TestCase):
         self.assertIn("--session", actual_arguments)
         self.assertIn(str(Path("C:/absolute/current_exam_session.json").resolve()), actual_arguments)
         self.assertEqual(root.findtext("t:Triggers/t:TimeTrigger/t:StartBoundary", namespaces=ns), "2026-09-10T12:01:00")
+    def test_session_is_frozen_next_to_run_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "current_exam_session.json"
+            source.write_text('{"session_id":"one"}', encoding="utf-8")
+            state_path = root / "exam-run-states" / "one.state.json"
+
+            frozen = windows_task._freeze_session(source, state_path)
+            source.write_text('{"session_id":"two"}', encoding="utf-8")
+
+            self.assertEqual(frozen, state_path.with_suffix(".session.json"))
+            self.assertEqual(
+                frozen.read_text(encoding="utf-8"),
+                '{"session_id":"one"}',
+            )
 
     def test_same_recorded_task_and_time_is_noop(self):
         release_at = datetime(2026, 9, 10, 12, 1, tzinfo=BEIJING)
@@ -402,6 +450,89 @@ class WindowsTaskTests(unittest.TestCase):
         self.assertNotIn("before_release", release.call_args.kwargs)
         answers.assert_called_once()
         driver.quit.assert_called_once()
+
+    def test_retry_reclicks_when_previous_release_still_shows_unpublished(self):
+        driver = Mock(current_url="https://example.test/examList/course/123")
+        config = Mock()
+        state = {"exam_id": "123", "status": "releasing_grades"}
+        release_button = Mock()
+        wait = Mock()
+        wait.until.side_effect = lambda condition: condition(driver)
+        with patch.object(create_signal_exam, "open_existing"), patch.object(
+            create_signal_exam,
+            "grade_snapshot",
+            return_value={"actual_end": datetime.now(BEIJING) - timedelta(minutes=1)},
+        ), patch.object(
+            create_signal_exam,
+            "release_gate",
+            return_value=(True, "ready"),
+        ), patch.object(
+            create_signal_exam,
+            "publication_counts",
+            side_effect=[
+                {"total": 1, "published": 0, "unpublished": 1},
+                {"total": 1, "published": 1, "unpublished": 0},
+            ],
+        ), patch.object(
+            create_signal_exam,
+            "exact_button",
+            return_value=release_button,
+        ), patch.object(
+            create_signal_exam,
+            "confirm_known_dialog",
+            return_value=True,
+        ), patch.object(
+            create_signal_exam,
+            "WebDriverWait",
+            return_value=wait,
+        ), patch.object(create_signal_exam, "responsive_sleep"), patch.object(
+            create_signal_exam,
+            "save_state",
+        ):
+            done, message = create_signal_exam.check_or_release(
+                driver,
+                config,
+                state,
+                Path("unused.state.json"),
+                commit=True,
+            )
+
+        self.assertTrue(done)
+        self.assertIn("成功", message)
+        self.assertEqual(state["status"], "grades_published")
+        release_button.click.assert_called_once_with()
+        driver.refresh.assert_called_once_with()
+
+    def test_scheduled_release_failure_is_written_to_state(self):
+        args = type("Args", (), {"headless": True})()
+        config = type(
+            "Config",
+            (),
+            {
+                "release_method": "定时脚本发布",
+                "release_at": datetime.now(BEIJING) - timedelta(minutes=1),
+            },
+        )()
+        state = {"exam_id": "123", "status": "waiting"}
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "exam.state.json"
+            with patch.object(
+                create_signal_exam,
+                "launch_for_config",
+                side_effect=create_signal_exam.WebDriverException("Edge crashed"),
+            ):
+                with self.assertRaisesRegex(create_signal_exam.WebDriverException, "Edge crashed"):
+                    create_signal_exam.release_grades_once(
+                        args,
+                        config,
+                        state,
+                        state_path,
+                    )
+            saved = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertIn("Edge crashed", saved["last_error"])
+        self.assertIn("WebDriverException", saved["error_trace"])
+        self.assertIn("last_release_attempt_at", saved)
 
     def test_activity_page_waits_for_login_then_continues(self):
         target = create_signal_exam.activity_url("course1")

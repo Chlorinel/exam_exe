@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,6 +90,19 @@ def _execution_parts(
     return command, subprocess.list2cmdline(arguments), script_path.parent.resolve()
 
 
+def _freeze_session(session_path: Path | None, state_path: Path) -> Path | None:
+    """Keep a task's question mapping stable when current session is replaced."""
+    if session_path is None:
+        return None
+    source = Path(session_path).resolve()
+    if not source.is_file():
+        raise RuntimeError(f"无法冻结计划任务的 Session：{source}")
+    target = state_path.resolve().with_suffix('.session.json')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return target
+
+
 def _task_xml(command: str, arguments: str, working_directory: Path, release_at: datetime) -> bytes:
     """Build Task Scheduler XML so long absolute paths are not limited by /TR."""
     namespace = "http://schemas.microsoft.com/windows/2004/02/mit/task"
@@ -159,11 +173,15 @@ def create_grade_release_task(
         return
     if profile_dir is None:
         profile_dir = Path(__file__).resolve().parents[2] / "work" / "edge-automation-profile"
+    frozen_session = _freeze_session(
+        Path(session_path) if session_path is not None else None,
+        state_path,
+    )
     command, arguments, working_directory = _execution_parts(
         config_path,
         state_path,
         Path(profile_dir),
-        Path(session_path) if session_path is not None else None,
+        frozen_session,
     )
     xml = _task_xml(command, arguments, working_directory, release_at)
     temporary = None
