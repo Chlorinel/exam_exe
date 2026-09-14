@@ -10,11 +10,16 @@ No automatic grading, account scraping, or credential export is performed.
 """
 
 import argparse
+from contextlib import contextmanager
 import subprocess
 import sys
 import time
+import traceback
 
-sys.stdout.reconfigure(encoding="utf-8")
+if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 from pathlib import Path
 
 from selenium import webdriver
@@ -162,19 +167,50 @@ def create_url(course_id: str, term_id: str) -> str:
     return f"{BASE_URL}/aic/exam-hub/teach-exam/create/{course_id}/0/{term_id}?from=agentCourse"
 
 
-def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
+def _edge_options(profile_dir: Path, *, headless: bool, offscreen: bool = False) -> Options:
     profile_dir.mkdir(parents=True, exist_ok=True)
     options = Options()
     options.binary_location = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
     options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--profile-directory=Default")
     options.add_argument("--disable-notifications")
-    options.add_argument("--start-maximized")
+    options.add_argument("--disable-background-mode")
+    options.add_argument("--no-first-run")
     options.page_load_strategy = "eager"
     if headless:
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1600,1200")
-    driver = webdriver.Edge(options=options)
+    elif offscreen:
+        options.add_argument("--window-position=-32000,-32000")
+        options.add_argument("--window-size=1600,1200")
+    else:
+        options.add_argument("--start-maximized")
+    return options
+
+
+def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
+    try:
+        driver = webdriver.Edge(
+            options=_edge_options(profile_dir, headless=headless),
+        )
+    except WebDriverException as exc:
+        message = str(exc).lower()
+        if not headless or not any(
+            marker in message
+            for marker in (
+                "failed to start: crashed",
+                "devtoolsactiveport file doesn't exist",
+                "session not created",
+            )
+        ):
+            raise
+        print(
+            "[浏览器] Headless Edge 启动失败，正在改用屏幕外隐藏窗口重试。",
+            flush=True,
+        )
+        driver = webdriver.Edge(
+            options=_edge_options(profile_dir, headless=False, offscreen=True),
+        )
     install_guidance_hook(driver)
     driver.set_page_load_timeout(90)
     return driver
@@ -1851,7 +1887,10 @@ def check_or_release(driver, config, state, state_path, *, commit=False, before_
         save_state(state_path, state)
         return True, '所有成绩已发布，无需重复操作。'
     if state.get('status') == 'releasing_grades':
-        raise RuntimeError('上次成绩发布结果不确定；当前仍有未发布记录，请人工核对，脚本不会重复点击。')
+        print(
+            f'上次发布后仍有 {counts["unpublished"]} 条未发布记录，正在按用户选择重试。',
+            flush=True,
+        )
     # Re-read the cutoff and all-review counts immediately before committing.
     snapshot = grade_snapshot(driver, config)
     ready, message = release_gate(config, now=datetime.now(BEIJING), actual_end=snapshot['actual_end'])
@@ -1862,14 +1901,34 @@ def check_or_release(driver, config, state, state_path, *, commit=False, before_
     state['status'] = 'releasing_grades'
     save_state(state_path, state)
     exact_button(driver, '发布成绩').click()
-    responsive_sleep(1)
-    confirm_known_dialog(driver, ('发布成绩', '成绩'))
-    driver.refresh()
-    snapshot = grade_snapshot(driver, config)
-    counts = publication_counts(driver)
-    if counts['unpublished']:
+    state['release_click_at'] = datetime.now(BEIJING).isoformat()
+    save_state(state_path, state)
+    try:
+        WebDriverWait(driver, 15).until(
+            lambda current: confirm_known_dialog(current, ('发布成绩', '成绩'))
+        )
+        print('[成绩发布] 已确认平台发布弹窗。', flush=True)
+    except TimeoutException:
+        # Some platform versions publish directly without a dialog. The
+        # authoritative check below decides whether the action succeeded.
+        print('[成绩发布] 未出现确认弹窗，正在直接回读发布结果。', flush=True)
+
+    counts = None
+    for attempt in range(1, 7):
+        responsive_sleep(3 if attempt == 1 else 5)
+        driver.refresh()
+        grade_snapshot(driver, config)
+        counts = publication_counts(driver)
+        if counts['unpublished'] == 0:
+            break
+        print(
+            f'[成绩发布] 第 {attempt} 次回读仍有 {counts["unpublished"]} 条未发布，等待平台刷新。',
+            flush=True,
+        )
+    if counts is None or counts['unpublished']:
         raise RuntimeError('尚未确认所有成绩发布成功，请核对运行记录和平台。')
     state['status'] = 'grades_published'
+    state.pop('release_click_at', None)
     save_state(state_path, state)
     return True, '已确认所有成绩发布成功。'
 
@@ -2091,22 +2150,30 @@ def confirm_exam_publish(
 
 
 def release_grades_once(args, config, state, state_path):
-    if not state.get('exam_id'):
-        raise RuntimeError('运行记录中没有考试编号，拒绝发布成绩。')
-    if config.release_method != '定时脚本发布' or config.release_at is None:
-        raise RuntimeError('当前配置不是定时脚本发布，拒绝发布成绩。')
-    if state.get('status') == 'grades_published' and state.get('answers_published'):
-        delete_scheduled_grade_release(config, state, state_path)
-        print('成绩、试卷及答案已经发布；残留的 Windows 计划任务已清理。')
-        return 0
-    if datetime.now(BEIJING) < config.release_at:
-        raise RuntimeError(f'尚未到计划成绩发布时间 {config.release_at:%Y-%m-%d %H:%M}。')
-    if state.get('status') not in ('waiting', 'releasing_grades', 'grades_published'):
-        raise RuntimeError(f'当前状态为 {state.get("status")}，不能执行独立成绩发布。')
-    driver = launch_for_config(args)
-    driver._exam_unattended = bool(args.headless)
+    print(
+        f"[成绩发布] 开始执行；考试ID={state.get('exam_id') or '缺失'}；"
+        f"状态={state.get('status') or '缺失'}；状态文件={Path(state_path).resolve()}",
+        flush=True,
+    )
+    driver = None
     try:
+        if not state.get('exam_id'):
+            raise RuntimeError('运行记录中没有考试编号，拒绝发布成绩。')
+        if config.release_method != '定时脚本发布' or config.release_at is None:
+            raise RuntimeError('当前配置不是定时脚本发布，拒绝发布成绩。')
+        if state.get('status') == 'grades_published' and state.get('answers_published'):
+            delete_scheduled_grade_release(config, state, state_path)
+            print('成绩、试卷及答案已经发布；残留的 Windows 计划任务已清理。')
+            return 0
+        if datetime.now(BEIJING) < config.release_at:
+            raise RuntimeError(f'尚未到计划成绩发布时间 {config.release_at:%Y-%m-%d %H:%M}。')
+        if state.get('status') not in ('waiting', 'releasing_grades', 'grades_published'):
+            raise RuntimeError(f'当前状态为 {state.get("status")}，不能执行独立成绩发布。')
+        print('[成绩发布] 正在启动教学平台浏览器。', flush=True)
+        driver = launch_for_config(args)
+        driver._exam_unattended = bool(args.headless)
         if state.get('status') != 'grades_published':
+            print('[成绩发布] 正在核对截止时间、审核状态和成绩发布状态。', flush=True)
             done, message = check_or_release(
                 driver,
                 config,
@@ -2117,6 +2184,7 @@ def release_grades_once(args, config, state, state_path):
             print(message)
             if not done:
                 raise RuntimeError('本次未发布成绩；计划任务保留，请核对运行记录。')
+        print('[答案公布] 正在核对并公布试卷及答案。', flush=True)
         answer_message = publish_exam_answers(
             driver,
             config,
@@ -2124,9 +2192,27 @@ def release_grades_once(args, config, state, state_path):
             state_path,
         )
         print(answer_message)
+    except Exception as exc:
+        state['last_release_attempt_at'] = datetime.now(BEIJING).isoformat()
+        state['last_error'] = f'{type(exc).__name__}: {exc}'
+        state['error_trace'] = traceback.format_exc()
+        if driver is not None:
+            try:
+                state['last_page'] = driver.current_url.split('?')[0]
+            except WebDriverException:
+                pass
+        save_state(state_path, state)
+        print(f'[成绩发布] 失败：{type(exc).__name__}: {exc}', file=sys.stderr, flush=True)
+        raise
     finally:
-        driver.quit()
+        if driver is not None:
+            driver.quit()
     delete_scheduled_grade_release(config, state, state_path)
+    state.pop('last_error', None)
+    state.pop('error_trace', None)
+    state.pop('last_page', None)
+    state['last_release_success_at'] = datetime.now(BEIJING).isoformat()
+    save_state(state_path, state)
     print('成绩、试卷及答案发布成功，Windows 计划任务已删除。')
     return 0
 
@@ -2302,7 +2388,12 @@ def manual_release_command(args, failure_message: str = '') -> list[str]:
     if getattr(sys, 'frozen', False):
         command = [str(Path(sys.executable).resolve())]
     else:
-        command = [str(Path(sys.executable).resolve()), str(script_path)]
+        interpreter = Path(sys.executable).resolve()
+        if interpreter.name.casefold() == 'pythonw.exe':
+            console_interpreter = interpreter.with_name('python.exe')
+            if console_interpreter.is_file():
+                interpreter = console_interpreter
+        command = [str(interpreter), str(script_path)]
     command.extend(
         [
             '--config', str(Path(args.config).resolve()),
@@ -2314,8 +2405,6 @@ def manual_release_command(args, failure_message: str = '') -> list[str]:
         command.extend(['--state', str(Path(args.state).resolve())])
     if getattr(args, 'session', None):
         command.extend(['--session', str(Path(args.session).resolve())])
-    if getattr(args, 'headless', False):
-        command.append('--headless')
     if failure_message:
         command.extend(['--failure-message', failure_message[:1000]])
     return command
@@ -2330,6 +2419,74 @@ def launch_manual_release_terminal(args, failure_message: str = ''):
         cwd=str(Path(__file__).resolve().parent),
         creationflags=subprocess.CREATE_NEW_CONSOLE,
     )
+
+
+def retry_release_command(args) -> list[str]:
+    script_path = Path(__file__).resolve()
+    if getattr(sys, 'frozen', False):
+        command = [str(Path(sys.executable).resolve())]
+    else:
+        command = [str(Path(sys.executable).resolve()), str(script_path)]
+    command.extend(
+        [
+            '--config', str(Path(args.config).resolve()),
+            '--profile-dir', str(Path(args.profile_dir).resolve()),
+            '--release-grades',
+            '--headless',
+        ]
+    )
+    if getattr(args, 'state', None):
+        command.extend(['--state', str(Path(args.state).resolve())])
+    if getattr(args, 'session', None):
+        command.extend(['--session', str(Path(args.session).resolve())])
+    if getattr(args, 'log_file', None):
+        command.extend(['--log-file', str(Path(args.log_file).resolve())])
+    return command
+
+
+def launch_release_retry(args):
+    return subprocess.Popen(
+        retry_release_command(args),
+        cwd=str(Path(__file__).resolve().parent),
+    )
+
+
+def show_release_failure_dialog(args, failure_message: str) -> str:
+    """Ask the signed-in desktop user how a failed scheduled run should recover."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    app = QApplication.instance()
+    owns_app = app is None
+    if app is None:
+        app = QApplication([])
+    box = QMessageBox()
+    box.setWindowTitle('定时发布成绩失败')
+    box.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
+    box.setIcon(QMessageBox.Icon.Critical)
+    box.setText('定时发布成绩或答案失败。')
+    box.setInformativeText(
+        f'{failure_message}\n\n'
+        '请选择立即重试或打开手动发布。\n'
+        f'日志：{release_log_path(args) or "未配置"}'
+    )
+    retry_button = box.addButton('重试自动发布', QMessageBox.ButtonRole.AcceptRole)
+    manual_button = box.addButton('打开手动发布', QMessageBox.ButtonRole.ActionRole)
+    box.setDefaultButton(retry_button)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is retry_button:
+        launch_release_retry(args)
+        action = 'retry'
+    elif clicked is manual_button:
+        launch_manual_release_terminal(args, failure_message)
+        action = 'manual'
+    else:
+        launch_release_retry(args)
+        action = 'retry'
+    if owns_app:
+        app.quit()
+    return action
 
 
 def run_manual_release_prompt(args) -> int:
@@ -2378,6 +2535,7 @@ def parse_args():
     parser.add_argument('--state', type=Path, help='运行记录文件，默认与配置表同名的 .state.json')
     parser.add_argument('--profile-dir', type=Path, default=DEFAULT_PROFILE_DIR)
     parser.add_argument('--headless', action='store_true', help='无窗口运行；首次登录请不要使用')
+    parser.add_argument('--log-file', type=Path, help='运行日志文件；计划发布默认写在状态文件旁')
     parser.add_argument('--failure-message', default='', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.publish_exam and not args.run:
@@ -2385,26 +2543,86 @@ def parse_args():
     return args
 
 
+class _TeeStream:
+    def __init__(self, original, logfile):
+        self.original = original
+        self.logfile = logfile
+        self.encoding = 'utf-8'
+
+    def write(self, value):
+        if self.original is not None:
+            self.original.write(value)
+        self.logfile.write(value)
+        self.logfile.flush()
+        return len(value)
+
+    def flush(self):
+        if self.original is not None:
+            self.original.flush()
+        self.logfile.flush()
+
+    def isatty(self):
+        return bool(self.original is not None and self.original.isatty())
+
+
+def release_log_path(args) -> Path | None:
+    explicit = getattr(args, 'log_file', None)
+    if explicit:
+        return Path(explicit).resolve()
+    if getattr(args, 'release_grades', False) and getattr(args, 'state', None):
+        return Path(args.state).resolve().with_suffix('.release.log')
+    return None
+
+
+@contextmanager
+def run_transcript(path: Path | None):
+    if path is None:
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logfile = path.open('a', encoding='utf-8', buffering=1)
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout = _TeeStream(old_stdout, logfile)
+    sys.stderr = _TeeStream(old_stderr, logfile)
+    try:
+        print('\n' + '=' * 72)
+        print(f'[运行日志] {datetime.now(BEIJING).isoformat()}  日志={path}')
+        yield
+    finally:
+        sys.stdout, sys.stderr = old_stdout, old_stderr
+        logfile.close()
+
+
 def main():
     args = parse_args()
-    try:
-        if args.manual_release_prompt:
-            return run_manual_release_prompt(args)
-        return run_configuration(args)
-    except KeyboardInterrupt:
-        print('已停止。运行记录已保留，可用相同配置和 --run 恢复。')
-        return 130
-    except (ConfigError, RuntimeError, ValueError, TimeoutException, WebDriverException) as exc:
-        if args.release_grades:
-            print(f'定时发布答案失败：{type(exc).__name__}: {exc}', file=sys.stderr)
-            try:
-                launch_manual_release_terminal(args, f'{type(exc).__name__}: {exc}')
-                print('已打开手动发布终端；输入 yes 后才会重新运行发布脚本。')
-            except (OSError, RuntimeError) as launch_exc:
-                print(f'无法打开手动发布终端：{launch_exc}', file=sys.stderr)
-        else:
-            print(f'脚本停止：{type(exc).__name__}: {exc}', file=sys.stderr)
-        return 1
+    with run_transcript(release_log_path(args)):
+        try:
+            if args.manual_release_prompt:
+                return run_manual_release_prompt(args)
+            return run_configuration(args)
+        except KeyboardInterrupt:
+            print('已停止。运行记录已保留，可用相同配置和 --run 恢复。')
+            return 130
+        except (ConfigError, RuntimeError, ValueError, TimeoutException, WebDriverException) as exc:
+            traceback.print_exc()
+            if args.release_grades:
+                print(f'定时发布答案失败：{type(exc).__name__}: {exc}', file=sys.stderr)
+                try:
+                    action = show_release_failure_dialog(
+                        args,
+                        f'{type(exc).__name__}: {exc}',
+                    )
+                    print(f'用户选择的失败处理方式：{action}')
+                except Exception as dialog_exc:
+                    print(f'无法显示发布失败选择窗口：{dialog_exc}', file=sys.stderr)
+                    try:
+                        launch_manual_release_terminal(args, f'{type(exc).__name__}: {exc}')
+                        print('已改为打开手动发布终端；输入 yes 后才会重新运行发布脚本。')
+                    except (OSError, RuntimeError) as launch_exc:
+                        print(f'无法打开手动发布终端：{launch_exc}', file=sys.stderr)
+            else:
+                print(f'脚本停止：{type(exc).__name__}: {exc}', file=sys.stderr)
+            return 1
 
 
 if __name__ == '__main__':
