@@ -2166,6 +2166,9 @@ def release_grades_once(args, config, state, state_path):
             print('成绩、试卷及答案已经发布；残留的 Windows 计划任务已清理。')
             return 0
         if datetime.now(BEIJING) < config.release_at:
+            if getattr(args, 'scheduled_release_check', False):
+                print(f'[登录补发检查] 尚未到发布时间 {config.release_at:%Y-%m-%d %H:%M}，本次跳过。')
+                return 0
             raise RuntimeError(f'尚未到计划成绩发布时间 {config.release_at:%Y-%m-%d %H:%M}。')
         if state.get('status') not in ('waiting', 'releasing_grades', 'grades_published'):
             raise RuntimeError(f'当前状态为 {state.get("status")}，不能执行独立成绩发布。')
@@ -2537,9 +2540,12 @@ def parse_args():
     parser.add_argument('--headless', action='store_true', help='无窗口运行；首次登录请不要使用')
     parser.add_argument('--log-file', type=Path, help='运行日志文件；计划发布默认写在状态文件旁')
     parser.add_argument('--failure-message', default='', help=argparse.SUPPRESS)
+    parser.add_argument('--scheduled-release-check', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.publish_exam and not args.run:
         parser.error('--publish-exam 必须配合 --run')
+    if args.scheduled_release_check and not args.release_grades:
+        parser.error('--scheduled-release-check 必须配合 --release-grades')
     return args
 
 

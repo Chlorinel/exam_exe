@@ -308,13 +308,77 @@ class WindowsTaskTests(unittest.TestCase):
                 directory,
                 scheduled={"task_name": name, "release_at": release_at.isoformat()},
             )
-            with patch.object(windows_task, "task_exists", return_value=True), patch.object(
+            with patch.object(windows_task, "task_has_logon_recovery", return_value=True), patch.object(
                 windows_task, "_run_schtasks"
             ) as run:
                 windows_task.create_grade_release_task(
                     Path(directory) / "config.xlsx", state_path, release_at
                 )
             run.assert_not_called()
+
+    def test_logon_trigger_is_due_only_delayed_and_user_scoped(self):
+        due = datetime(2026, 9, 17, 12, 1, tzinfo=BEIJING)
+        root = ET.fromstring(windows_task._task_xml("python.exe", "args", Path.cwd(), due))
+        ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+        logon = root.find("t:Triggers/t:LogonTrigger", ns)
+        self.assertIsNotNone(logon)
+        self.assertEqual(logon.findtext("t:StartBoundary", namespaces=ns),
+                         root.findtext("t:Triggers/t:TimeTrigger/t:StartBoundary", namespaces=ns))
+        self.assertEqual(logon.findtext("t:Delay", namespaces=ns), "PT1M")
+        self.assertEqual(logon.findtext("t:UserId", namespaces=ns),
+                         root.findtext("t:Principals/t:Principal/t:UserId", namespaces=ns))
+        self.assertEqual(root.findtext("t:Settings/t:MultipleInstancesPolicy", namespaces=ns), "IgnoreNew")
+        self.assertEqual(root.findtext("t:Settings/t:RunOnlyIfNetworkAvailable", namespaces=ns), "false")
+
+    def test_legacy_task_is_upgraded_without_changing_release_time(self):
+        due = datetime(2026, 9, 17, 12, 1, tzinfo=BEIJING)
+        name = "TeachingAutomation_GradeRelease_2097577330862120962"
+        with tempfile.TemporaryDirectory() as directory:
+            state = self.state_file(directory, scheduled={"task_name": name, "release_at": due.isoformat()})
+            with patch.object(windows_task, "task_has_logon_recovery", return_value=False), patch.object(
+                windows_task, "_run_schtasks"
+            ) as run:
+                windows_task.create_grade_release_task(Path(directory) / "config.xlsx", state, due)
+            self.assertEqual(run.call_args.args[0][:4], ["/Create", "/TN", name, "/XML"])
+
+    def test_logon_recovery_query_distinguishes_old_and_new_tasks(self):
+        due = datetime(2026, 9, 17, 12, 1, tzinfo=BEIJING)
+        xml = windows_task._task_xml("python.exe", "--release-grades --scheduled-release-check", Path.cwd(), due)
+        result = SimpleNamespace(returncode=0, stdout=xml)
+        with patch.object(windows_task, "_run_schtasks", return_value=result):
+            self.assertTrue(windows_task.task_has_logon_recovery("test"))
+            root = ET.fromstring(xml)
+            ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+            triggers = root.find("t:Triggers", ns)
+            triggers.remove(triggers.find("t:LogonTrigger", ns))
+            result.stdout = ET.tostring(root)
+            self.assertFalse(windows_task.task_has_logon_recovery("test"))
+
+    def test_logon_check_before_due_exits_without_browser_or_state_change(self):
+        config = SimpleNamespace(release_method="定时脚本发布", release_at=datetime.now(BEIJING) + timedelta(hours=1))
+        args = SimpleNamespace(headless=True, scheduled_release_check=True)
+        state = {"exam_id": "123", "status": "waiting"}
+        with patch.object(create_signal_exam, "launch_for_config") as launch, patch.object(create_signal_exam, "save_state") as save:
+            self.assertEqual(create_signal_exam.release_grades_once(args, config, state, Path("unused.json")), 0)
+        launch.assert_not_called()
+        save.assert_not_called()
+
+    def test_completed_logon_check_cleans_up_without_republishing(self):
+        config = SimpleNamespace(release_method="定时脚本发布", release_at=datetime.now(BEIJING) - timedelta(hours=1))
+        state = {"exam_id": "123", "status": "grades_published", "answers_published": True}
+        with patch.object(create_signal_exam, "launch_for_config") as launch, patch.object(create_signal_exam, "delete_scheduled_grade_release") as cleanup:
+            result = create_signal_exam.release_grades_once(SimpleNamespace(scheduled_release_check=True), config, state, Path("unused.json"))
+        self.assertEqual(result, 0)
+        launch.assert_not_called()
+        cleanup.assert_called_once()
+
+    def test_existing_frozen_session_can_be_used_for_task_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "exam.state.json"
+            frozen = state.with_suffix(".session.json")
+            frozen.write_text('{"session_id":"original"}', encoding="utf-8")
+            self.assertEqual(windows_task._freeze_session(frozen, state), frozen)
+            self.assertEqual(frozen.read_text(encoding="utf-8"), '{"session_id":"original"}')
 
     def test_changed_time_replaces_task_with_xml(self):
         release_at = datetime(2026, 9, 10, 12, 2, tzinfo=BEIJING)
