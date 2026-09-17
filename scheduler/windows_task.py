@@ -63,6 +63,28 @@ def task_exists(name: str) -> bool:
     return result.returncode == 0
 
 
+def task_has_logon_recovery(name: str) -> bool:
+    """Old one-time tasks must be upgraded even when their release time matches."""
+    result = _run_schtasks(["/Query", "/TN", name, "/XML"], check=False)
+    if result.returncode:
+        return False
+    try:
+        root = ET.fromstring(result.stdout)
+    except (ET.ParseError, ValueError):
+        return False
+    ns = {"t": "http://schemas.microsoft.com/windows/2004/02/mit/task"}
+    trigger = root.find("t:Triggers/t:LogonTrigger", ns)
+    arguments = root.findtext("t:Actions/t:Exec/t:Arguments", "", ns)
+    return (
+        trigger is not None
+        and trigger.findtext("t:Enabled", "true", ns) == "true"
+        and bool(trigger.findtext("t:UserId", "", ns))
+        and trigger.findtext("t:Delay", "", ns) == "PT1M"
+        and "--scheduled-release-check" in arguments
+        and root.findtext("t:Settings/t:RunOnlyIfNetworkAvailable", "", ns) == "false"
+    )
+
+
 def _execution_parts(
     config_path: Path,
     state_path: Path,
@@ -82,6 +104,7 @@ def _execution_parts(
             "--state", str(state_path.resolve()),
             "--profile-dir", str(profile_dir.resolve()),
             "--release-grades",
+            "--scheduled-release-check",
             "--headless",
         ]
     )
@@ -99,7 +122,8 @@ def _freeze_session(session_path: Path | None, state_path: Path) -> Path | None:
         raise RuntimeError(f"无法冻结计划任务的 Session：{source}")
     target = state_path.resolve().with_suffix('.session.json')
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(source, target)
+    if source != target:
+        shutil.copy2(source, target)
     return target
 
 
@@ -120,7 +144,15 @@ def _task_xml(command: str, arguments: str, working_directory: Path, release_at:
     principal = ET.SubElement(principals, tag("Principal"), {"id": "Author"})
     domain = os.environ.get("USERDOMAIN", "").strip()
     user = os.environ.get("USERNAME", "").strip() or getpass.getuser()
-    ET.SubElement(principal, tag("UserId")).text = f"{domain}\\{user}" if domain else user
+    user_id = f"{domain}\\{user}" if domain else user
+    ET.SubElement(principal, tag("UserId")).text = user_id
+    # A second trigger catches shutdowns that miss the one-time release trigger.
+    # Windows waits one minute; there is no resident Python polling process.
+    logon = ET.SubElement(triggers, tag("LogonTrigger"))
+    ET.SubElement(logon, tag("StartBoundary")).text = local.strftime("%Y-%m-%dT%H:%M:%S")
+    ET.SubElement(logon, tag("Enabled")).text = "true"
+    ET.SubElement(logon, tag("Delay")).text = "PT1M"
+    ET.SubElement(logon, tag("UserId")).text = user_id
     ET.SubElement(principal, tag("LogonType")).text = "InteractiveToken"
     ET.SubElement(principal, tag("RunLevel")).text = "LeastPrivilege"
     settings = ET.SubElement(task, tag("Settings"))
@@ -130,7 +162,8 @@ def _task_xml(command: str, arguments: str, working_directory: Path, release_at:
         ("StopIfGoingOnBatteries", "false"),
         ("AllowHardTerminate", "true"),
         ("StartWhenAvailable", "true"),
-        ("RunOnlyIfNetworkAvailable", "true"),
+        # Let the script log failures and show recovery options even when offline.
+        ("RunOnlyIfNetworkAvailable", "false"),
         ("Enabled", "true"),
         ("Hidden", "false"),
         ("ExecutionTimeLimit", "PT2H"),
@@ -155,8 +188,8 @@ def create_grade_release_task(
 ) -> None:
     """Create or update the one-time grade-release task.
 
-    If the recorded task has the same name and time and Windows still has it,
-    this is a no-op.  A changed time replaces the existing task via /F.
+    Matching tasks are kept only if they already include logon recovery.
+    Legacy tasks and changed times are replaced via /F.
     """
     config_path = Path(config_path).resolve()
     state_path = Path(state_path).resolve()
@@ -168,7 +201,7 @@ def create_grade_release_task(
     if (
         recorded.get("task_name") == name
         and recorded.get("release_at") == release_at.isoformat()
-        and task_exists(name)
+        and task_has_logon_recovery(name)
     ):
         return
     if profile_dir is None:
