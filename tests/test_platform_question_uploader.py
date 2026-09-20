@@ -57,6 +57,40 @@ def sample_question() -> GeneratedQuestion:
 
 
 class RichTextTests(unittest.TestCase):
+    def test_multiple_choice_clicks_every_selected_answer(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        inputs = [Mock() for _ in range(4)]
+        driver = Mock()
+        driver.find_elements.return_value = inputs
+        uploader = QuestionBankUploader(config, driver=driver)
+
+        uploader._choose_answers("多选题", "A、C")
+
+        self.assertEqual(
+            driver.execute_script.call_args_list,
+            [
+                unittest.mock.call("arguments[0].click();", inputs[0]),
+                unittest.mock.call("arguments[0].click();", inputs[2]),
+            ],
+        )
+
+    def test_multiple_choice_rejects_only_one_answer(self):
+        config = UploadConfig(
+            course_id="course-test",
+            term_id="term-test",
+            course_name="信号与系统",
+            profile_dir=Path("profile"),
+        )
+        uploader = QuestionBankUploader(config, driver=Mock())
+
+        with self.assertRaisesRegex(ValueError, "至少包含两个"):
+            uploader._choose_answers("多选题", "A")
+
     def test_caret_is_moved_to_editor_end_without_mouse(self):
         config = UploadConfig(
             course_id="course-test",
@@ -211,6 +245,18 @@ class RichTextTests(unittest.TestCase):
         self.assertEqual(question_fingerprint(question), question_fingerprint(question))
         changed = replace(question, answer="A")
         self.assertNotEqual(question_fingerprint(question), question_fingerprint(changed))
+
+    def test_multiple_choice_fingerprint_uses_canonical_answer(self):
+        question = replace(
+            sample_question(),
+            question_type="多选题",
+            answer="AC",
+        )
+        equivalent = replace(question, answer="A,C")
+        self.assertEqual(
+            question_fingerprint(question),
+            question_fingerprint(equivalent),
+        )
 
     def test_click_safely_uses_dom_click_when_page_layer_intercepts(self):
         driver = Mock()

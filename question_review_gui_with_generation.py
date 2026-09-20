@@ -103,6 +103,7 @@ from deepseek_question_generator import (
     QuestionSpec,
     QuestionBatch,
     load_question_batch,
+    normalize_answer_for_question_type,
     save_question_batch,
     validate_batch_duplicates,
     validate_question,
@@ -1135,6 +1136,9 @@ class QuestionReviewWindow(QMainWindow):
 
         self.score_edit = QLineEdit()
         self.answer_edit = QLineEdit()
+        self.answer_edit.setPlaceholderText(
+            "单选填 A；多选填 A,C"
+        )
 
         meta_form.addRow("章节", self.chapter_edit)
         meta_form.addRow(
@@ -1147,7 +1151,7 @@ class QuestionReviewWindow(QMainWindow):
             self.difficulty_edit,
         )
         meta_form.addRow("分值", self.score_edit)
-        meta_form.addRow("答案", self.answer_edit)
+        meta_form.addRow("答案（多选用 A,C）", self.answer_edit)
 
         editor_layout.addLayout(meta_form)
 
@@ -1158,7 +1162,7 @@ class QuestionReviewWindow(QMainWindow):
         editor_layout.addWidget(self.stem_edit, 2)
 
         editor_layout.addWidget(
-            QLabel("选项（单选题）")
+            QLabel("选项（单选题 / 多选题）")
         )
 
         self.option_edits: dict[str, QPlainTextEdit] = {}
@@ -1524,7 +1528,10 @@ class QuestionReviewWindow(QMainWindow):
             difficulty=self.difficulty_edit.text().strip(),
             stem=self.stem_edit.toPlainText().strip(),
             options=options,
-            answer=self.answer_edit.text().strip(),
+            answer=normalize_answer_for_question_type(
+                self.type_edit.text().strip(),
+                self.answer_edit.text().strip(),
+            ),
             explanation=self.explanation_edit.toPlainText().strip(),
             score=score,
             identifier=original.identifier,

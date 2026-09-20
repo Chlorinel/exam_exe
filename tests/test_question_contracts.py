@@ -12,11 +12,16 @@ from deepseek_question_generator import (
     QuestionBatch,
     QuestionSpec,
     assign_question_identifiers,
+    build_generation_prompt,
+    build_regeneration_prompt,
+    choice_answer_letters,
     extract_question_identifier,
     load_question_batch,
+    normalize_choice_answer,
     parse_generated_questions,
     save_question_batch,
     validate_batch_duplicates,
+    validate_question,
 )
 from question_review_gui_with_generation import question_batch_file_is_approved
 
@@ -61,6 +66,81 @@ def sample_batch(questions, *, expected_count=None):
 
 
 class QuestionContractTests(unittest.TestCase):
+    def test_multiple_choice_answers_are_normalized(self):
+        self.assertEqual(normalize_choice_answer(["A", "C"]), "A,C")
+        self.assertEqual(normalize_choice_answer("AC"), "A,C")
+        self.assertEqual(normalize_choice_answer("A、C"), "A,C")
+        self.assertEqual(normalize_choice_answer("A and C"), "A,C")
+        self.assertEqual(choice_answer_letters("答案为 A 和 C"), ("A", "C"))
+
+    def test_parser_accepts_multiple_choice_answer_array(self):
+        spec = QuestionSpec(
+            course_name="信号与系统",
+            chapter="第二章",
+            knowledge_point="卷积积分",
+            question_type="多选题",
+            count=1,
+            score=5,
+        )
+        response = {
+            "questions": [
+                {
+                    "type": "多选题",
+                    "chapter": "第二章",
+                    "knowledge_point": "卷积积分",
+                    "difficulty": "medium",
+                    "question": "请选择所有正确说法。",
+                    "options": {"A": "甲", "B": "乙", "C": "丙", "D": "丁"},
+                    "answer": ["A", "C"],
+                    "explanation": "甲和丙正确。",
+                    "score": 5,
+                }
+            ]
+        }
+
+        question = parse_generated_questions(
+            json.dumps(response, ensure_ascii=False),
+            spec,
+        )[0]
+
+        self.assertEqual(question.answer, "A,C")
+
+    def test_multiple_choice_requires_two_valid_answers(self):
+        question = sample_question()
+        question.question_type = "多选题"
+        question.answer = "A、C"
+        self.assertEqual(validate_question(question), [])
+
+        question.answer = "A"
+        self.assertIn(
+            "多选题必须至少有两个不同的正确答案，例如 A,C。",
+            validate_question(question),
+        )
+
+        question.answer = "A,E"
+        self.assertIn(
+            "多选题答案只能包含 A/B/C/D。",
+            validate_question(question),
+        )
+
+    def test_multiple_choice_prompts_require_answer_array(self):
+        spec = QuestionSpec(
+            course_name="信号与系统",
+            chapter="第二章",
+            knowledge_point="卷积积分",
+            question_type="多选题",
+            count=1,
+            score=5,
+        )
+        prompt = build_generation_prompt(spec)
+        self.assertIn('"answer": ["A", "C"]', prompt)
+        self.assertIn("至少有两个正确答案", prompt)
+
+        question = sample_question()
+        question.question_type = "multiple_choice"
+        regenerate_prompt = build_regeneration_prompt(question)
+        self.assertIn('"answer": ["A", "C"]', regenerate_prompt)
+
     def test_decimal_round_trip_and_approved_gate(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "questions.json"
