@@ -68,6 +68,23 @@ from responsive_wait import WebDriverWait, responsive_sleep
 CONTENT_FORMAT = "markdown_latex"
 QUESTION_IDENTIFIER_PATTERN = re.compile(r"\[(\d{5})\]\s*$")
 
+_SINGLE_CHOICE_TYPES = {
+    "single_choice",
+    "single-choice",
+    "单选",
+    "单选题",
+    "单项选择题",
+}
+_MULTIPLE_CHOICE_TYPES = {
+    "multiple_choice",
+    "multiple-choice",
+    "多选",
+    "多选题",
+    "多项选择题",
+}
+_CHOICE_TYPES = _SINGLE_CHOICE_TYPES | _MULTIPLE_CHOICE_TYPES
+_CHOICE_LETTERS = {"A", "B", "C", "D"}
+
 
 _OVERESCAPED_LATEX_SEGMENTS = (
     re.compile(
@@ -99,6 +116,78 @@ def normalize_latex_escaping(value: str) -> str:
         )
 
     return normalized
+
+
+def is_single_choice_type(question_type: str) -> bool:
+    return str(question_type or "").strip().casefold() in _SINGLE_CHOICE_TYPES
+
+
+def is_multiple_choice_type(question_type: str) -> bool:
+    return str(question_type or "").strip().casefold() in _MULTIPLE_CHOICE_TYPES
+
+
+def is_choice_type(question_type: str) -> bool:
+    return str(question_type or "").strip().casefold() in _CHOICE_TYPES
+
+
+def choice_answer_letters(value: Any) -> tuple[str, ...]:
+    """Return de-duplicated choice letters from common AI/user formats.
+
+    Accepted examples include ``["A", "C"]``, ``"A,C"``, ``"AC"``,
+    ``"A、C"`` and ``"A and C"``. Unknown tokens are preserved so that
+    validation reports them instead of silently selecting a wrong answer.
+    """
+
+    if isinstance(value, (list, tuple, set)):
+        raw_items: list[Any] = list(value)
+    else:
+        text = str(value or "").strip()
+        if text.startswith("[") and text.endswith("]"):
+            try:
+                decoded = json.loads(text)
+            except (TypeError, ValueError):
+                decoded = None
+            if isinstance(decoded, list):
+                return choice_answer_letters(decoded)
+
+        text = text.upper()
+        text = re.sub(
+            r"^(?:(?:THE\s+)?(?:CORRECT\s+)?ANSWER|(?:正确)?答案|选项)"
+            r"\s*(?:IS|为|是|[:：])?\s*",
+            "",
+            text,
+        )
+        text = re.sub(r"\b(?:AND|OR)\b", ",", text)
+        text = re.sub(r"[、，,;；/|&+\s和及与或]+", ",", text)
+        text = text.strip("[](){}")
+        raw_items = [item for item in text.split(",") if item]
+
+    letters: list[str] = []
+    for raw_item in raw_items:
+        item = str(raw_item or "").strip().upper()
+        item = item.strip("'\"[](){}。.:：")
+        if re.fullmatch(r"[A-Z]+", item) and len(item) > 1:
+            items = list(item)
+        else:
+            items = [item]
+        for token in items:
+            if token and token not in letters:
+                letters.append(token)
+    return tuple(letters)
+
+
+def normalize_choice_answer(value: Any) -> str:
+    """Use one stable storage format for single and multiple-choice answers."""
+    return ",".join(choice_answer_letters(value))
+
+
+def normalize_answer_for_question_type(
+    question_type: str,
+    value: Any,
+) -> str:
+    if is_choice_type(question_type):
+        return normalize_choice_answer(value)
+    return normalize_latex_escaping(str(value or "").strip())
 
 
 def extract_question_identifier(stem: str) -> str:
@@ -207,9 +296,13 @@ class GeneratedQuestion:
     def from_dict(cls, data: dict[str, Any]) -> "GeneratedQuestion":
         value = dict(data)
         value["score"] = Decimal(str(value["score"]))
-        for key in ("stem", "answer", "explanation"):
+        for key in ("stem", "explanation"):
             if key in value:
                 value[key] = normalize_latex_escaping(value[key])
+        value["answer"] = normalize_answer_for_question_type(
+            value.get("question_type", value.get("type", "")),
+            value.get("answer", ""),
+        )
         if isinstance(value.get("options"), dict):
             value["options"] = {
                 str(key): normalize_latex_escaping(text)
@@ -361,6 +454,23 @@ class DeepSeekWebConfig:
 def build_generation_prompt(spec: QuestionSpec) -> str:
     spec.validate()
     score = spec.normalized_score()
+    if is_multiple_choice_type(spec.question_type):
+        choice_requirement = (
+            "多选题必须有 A/B/C/D 四个不同选项，至少有两个正确答案；"
+            'answer 必须是 JSON 字符串数组，例如 ["A", "C"]。'
+        )
+        answer_example = '["A", "C"]'
+    elif is_single_choice_type(spec.question_type):
+        choice_requirement = (
+            "单选题必须有 A/B/C/D 四个不同选项且只有一个正确答案；"
+            'answer 必须是单个字符串，例如 "A"。'
+        )
+        answer_example = '"A"'
+    else:
+        choice_requirement = (
+            "如果是选择题，必须返回 A/B/C/D 四个不同选项，并严格按题型返回答案。"
+        )
+        answer_example = '"答案"'
     latex_value_example = r"计算 \(x(t)=\frac{1}{2}\) 的值"
     latex_json_example = json.dumps(
         latex_value_example,
@@ -388,7 +498,7 @@ def build_generation_prompt(spec: QuestionSpec) -> str:
 7. 禁止使用 $$...$$。
 8. 禁止将公式转为图片。
 9. 禁止用 Unicode 上标/下标替代 LaTeX。
-10. 单选题必须有 A/B/C/D 四个不同选项且只有一个正确答案。
+10. {choice_requirement}
 11. 同一批题目不得完全重复。
 12. 只能输出合法 JSON；禁止 Markdown 代码块、前言、结尾说明。
 13. JSON 字符串里的 LaTeX 反斜杠必须正确转义，而且只能转义一层。
@@ -416,7 +526,7 @@ def build_generation_prompt(spec: QuestionSpec) -> str:
         "C": "选项C",
         "D": "选项D"
       }},
-      "answer": "A",
+      "answer": {answer_example},
       "explanation": "解析，可含 Markdown 和 LaTeX",
       "score": {score}
     }}
@@ -440,6 +550,17 @@ def build_regeneration_prompt(
         r"计算 \(x(t)=\frac{1}{2}\) 的值",
         ensure_ascii=False,
     )
+    if is_multiple_choice_type(original.question_type):
+        choice_requirement = (
+            '多选题 answer 必须是至少含两个答案的 JSON 字符串数组，例如 ["A", "C"]。'
+        )
+        answer_example = '["A", "C"]'
+    elif is_single_choice_type(original.question_type):
+        choice_requirement = '单选题 answer 必须是 A/B/C/D 中的一个字符串。'
+        answer_example = '"A"'
+    else:
+        choice_requirement = "选择题必须返回 A/B/C/D 四个不同选项。"
+        answer_example = '"..."'
 
     return f"""请重新生成下面这一道考试题。
 
@@ -459,6 +580,7 @@ def build_regeneration_prompt(
 7. 只能输出合法 JSON，不要 Markdown 代码块或其他文字。
 8. JSON 字符串中的 LaTeX 反斜杠只能转义一层：按实际输出的 JSON 原文计数，公式分隔符和 LaTeX 命令开头的一个反斜杠写成恰好两个连续反斜杠，禁止重复转义成四个。只有 LaTeX 本身需要两个反斜杠的矩阵换行符例外。
 9. 正确 JSON 原文示例："question": {latex_json_example}
+10. {choice_requirement}
 
 严格返回：
 
@@ -470,13 +592,13 @@ def build_regeneration_prompt(
     "difficulty": "{original.difficulty}",
     "question": "...",
     "options": null,
-    "answer": "...",
+    "answer": {answer_example},
     "explanation": "...",
     "score": {original.score}
   }}
 }}
 
-选择题的 options 必须返回 A/B/C/D 对象。"""
+选择题的 options 必须返回 A/B/C/D 对象；非选择题的 options 必须为 null。"""
 
 
 # ============================================================================
@@ -712,14 +834,16 @@ def _question_from_mapping(
     except InvalidOperation as exc:
         raise ValueError(f"题目 score 无效：{score_raw}") from exc
 
+    question_type = str(
+        data.get(
+            "type",
+            fallback_spec.question_type if fallback_spec else "",
+        )
+    ).strip()
+
     question = GeneratedQuestion(
         local_id=local_id or f"Q-{uuid.uuid4().hex[:10]}",
-        question_type=str(
-            data.get(
-                "type",
-                fallback_spec.question_type if fallback_spec else "",
-            )
-        ).strip(),
+        question_type=question_type,
         chapter=str(
             data.get(
                 "chapter",
@@ -742,8 +866,9 @@ def _question_from_mapping(
             str(data.get("question", data.get("stem", ""))).strip()
         ),
         options=_normalize_options(data.get("options")),
-        answer=normalize_latex_escaping(
-            str(data.get("answer", "")).strip()
+        answer=normalize_answer_for_question_type(
+            question_type,
+            data.get("answer", ""),
         ),
         explanation=normalize_latex_escaping(
             str(data.get("explanation", "")).strip()
@@ -898,15 +1023,6 @@ def parse_regenerated_question(
 # 自动校验
 # ============================================================================
 
-_SINGLE_CHOICE_TYPES = {
-    "single_choice",
-    "single-choice",
-    "单选",
-    "单选题",
-    "单项选择题",
-}
-
-
 def _latex_delimiter_errors(text: str, label: str) -> list[str]:
     errors: list[str] = []
 
@@ -964,16 +1080,22 @@ def validate_question(question: GeneratedQuestion) -> list[str]:
                 )
             )
 
-    if question.question_type.lower() in _SINGLE_CHOICE_TYPES:
-        required = {"A", "B", "C", "D"}
+    question_type = question.question_type.strip().casefold()
+    if question_type in _CHOICE_TYPES:
+        required = _CHOICE_LETTERS
+        type_label = (
+            "单选题"
+            if question_type in _SINGLE_CHOICE_TYPES
+            else "多选题"
+        )
 
         if question.options is None:
-            errors.append("单选题缺少选项。")
+            errors.append(f"{type_label}缺少选项。")
         else:
             missing = required - set(question.options)
             if missing:
                 errors.append(
-                    "单选题缺少选项："
+                    f"{type_label}缺少选项："
                     + "、".join(sorted(missing))
                 )
 
@@ -982,10 +1104,18 @@ def validate_question(question: GeneratedQuestion) -> list[str]:
                 for key in sorted(required & set(question.options))
             ]
             if len(values) != len(set(values)):
-                errors.append("单选题存在完全重复的选项。")
+                errors.append(f"{type_label}存在完全重复的选项。")
 
-        if question.answer.upper() not in required:
-            errors.append("单选题答案必须是 A/B/C/D。")
+        answer_letters = choice_answer_letters(question.answer)
+        if any(letter not in required for letter in answer_letters):
+            errors.append(f"{type_label}答案只能包含 A/B/C/D。")
+        elif question_type in _SINGLE_CHOICE_TYPES:
+            if len(answer_letters) != 1:
+                errors.append("单选题必须且只能有一个正确答案。")
+        elif len(answer_letters) < 2:
+            errors.append(
+                "多选题必须至少有两个不同的正确答案，例如 A,C。"
+            )
 
     return errors
 

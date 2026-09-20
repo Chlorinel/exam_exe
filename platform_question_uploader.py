@@ -25,7 +25,12 @@ from selenium.webdriver.remote.webelement import WebElement
 from responsive_wait import WebDriverWait
 from platform_guidance import dismiss_platform_guidance, install_guidance_hook
 
-from deepseek_question_generator import GeneratedQuestion, load_question_batch
+from deepseek_question_generator import (
+    GeneratedQuestion,
+    choice_answer_letters,
+    load_question_batch,
+    normalize_answer_for_question_type,
+)
 from exam_session import load_session, save_session, update_question_upload
 from question_review_gui_with_generation import question_batch_file_is_approved
 
@@ -42,6 +47,7 @@ QUESTION_TYPE_LABELS = {
     "multiple-choice": "多选题",
     "多选": "多选题",
     "多选题": "多选题",
+    "多项选择题": "多选题",
     "true_false": "判断题",
     "true-false": "判断题",
     "判断": "判断题",
@@ -151,7 +157,10 @@ def question_fingerprint(question: GeneratedQuestion) -> str:
             str(key).upper(): normalize_text(value)
             for key, value in sorted((question.options or {}).items())
         },
-        "answer": normalize_text(question.answer).upper(),
+        "answer": normalize_answer_for_question_type(
+            question.question_type,
+            question.answer,
+        ).upper(),
         "explanation": normalize_text(question.explanation),
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -467,15 +476,22 @@ class QuestionBankUploader:
                 raise ValueError(f"无法识别判断题答案：{answer}")
             selector = "input.el-radio__original"
         elif label == "单选题":
-            if normalized not in {"A", "B", "C", "D"}:
+            letters = choice_answer_letters(answer)
+            if len(letters) != 1 or letters[0] not in {"A", "B", "C", "D"}:
                 raise ValueError(f"单选题答案必须是 A/B/C/D：{answer}")
-            indexes = [ord(normalized) - ord("A")]
+            indexes = [ord(letters[0]) - ord("A")]
             selector = "input.el-radio__original"
         else:
-            letters = [x for x in re.findall(r"[A-D]", normalized)]
-            indexes = sorted({ord(x) - ord("A") for x in letters})
-            if not indexes:
-                raise ValueError(f"多选题答案必须包含 A/B/C/D：{answer}")
+            letters = choice_answer_letters(answer)
+            if (
+                len(letters) < 2
+                or any(x not in {"A", "B", "C", "D"} for x in letters)
+            ):
+                raise ValueError(
+                    "多选题必须至少包含两个不同的 A/B/C/D 答案，"
+                    f"例如 A,C：{answer}"
+                )
+            indexes = sorted(ord(x) - ord("A") for x in letters)
             selector = "input.el-checkbox__original"
         inputs = self.driver.find_elements(By.CSS_SELECTOR, selector)
         if len(inputs) < max(indexes) + 1:
