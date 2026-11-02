@@ -27,6 +27,7 @@ from platform_question_uploader import (
     QuestionBankUploader,
     UploadConfig,
     UploadState,
+    click_safely,
     normalize_text,
     question_fingerprint,
 )
@@ -334,7 +335,8 @@ def _open_chapter(
         By.CSS_SELECTOR,
         ".content",
     )
-    content.click()
+    # 与上传流程使用同一点击处理，避免浮层或过渡动画挡住章节入口。
+    click_safely(driver, content)
 
     try:
         wait.until(

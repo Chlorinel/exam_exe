@@ -236,6 +236,7 @@ def _exact_visible_text(driver: webdriver.Edge, selector: str, text: str) -> Web
 
 def click_safely(driver: webdriver.Edge, element: WebElement) -> None:
     """Click a control even when a transient page layer intercepts WebDriver."""
+    dismiss_platform_guidance(driver)
     driver.execute_script(
         "arguments[0].scrollIntoView({block:'center',inline:'nearest'});",
         element,
@@ -246,6 +247,7 @@ def click_safely(driver: webdriver.Edge, element: WebElement) -> None:
         )
         element.click()
     except WebDriverException:
+        dismiss_platform_guidance(driver)
         # The platform keeps some transparent/popover layers mounted after
         # their animation. A DOM click is stable across window sizes and does
         # not depend on screen coordinates.

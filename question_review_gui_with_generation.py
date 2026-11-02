@@ -193,7 +193,7 @@ MATHJAX_URL = (
 
 def _protect_math(text: str) -> tuple[str, dict[str, str]]:
     """
-    保护 \\(...\\) 与 \\[...\\]，避免普通文本 HTML 转义破坏公式。
+    保护 \\(...\\) 与 \\[...\\]，避免 Markdown 格式处理改写公式。
     """
     tokens: dict[str, str] = {}
 
@@ -305,7 +305,9 @@ def _simple_markdown_to_html(text: str) -> str:
     rendered = "\n".join(out)
 
     for key, latex in math_tokens.items():
-        rendered = rendered.replace(key, latex)
+        # 公式仍属于 HTML 文本，必须转义 <、>、&，否则 <T_0 等内容
+        # 会被浏览器当成标签并吞掉后续题干。DOM 会解码实体供 MathJax 使用。
+        rendered = rendered.replace(key, html.escape(latex))
 
     return rendered
 

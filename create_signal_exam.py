@@ -88,6 +88,7 @@ def click_safely(
     allow_hidden: bool = False,
 ) -> None:
     """Click a control, using DOM click when layout CSS hides or covers it."""
+    dismiss_platform_guidance(driver)
     if allow_hidden:
         driver.execute_script("arguments[0].click();", element)
         return
@@ -95,6 +96,7 @@ def click_safely(
         WebDriverWait(driver, 10).until(lambda d: element.is_displayed() and element.is_enabled())
         element.click()
     except WebDriverException:
+        dismiss_platform_guidance(driver)
         driver.execute_script("arguments[0].click();", element)
 
 
