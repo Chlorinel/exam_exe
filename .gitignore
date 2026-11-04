@@ -7,4 +7,5 @@ work/
 outputs/
 .pytest_cache/
 .venv/
+.venv.backup-*/
 

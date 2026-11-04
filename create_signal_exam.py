@@ -29,6 +29,7 @@ from selenium.webdriver.edge.options import Options
 from selenium.webdriver.remote.webelement import WebElement
 from responsive_wait import WebDriverWait, responsive_sleep
 from platform_guidance import dismiss_platform_guidance, install_guidance_hook
+import edge_runtime
 
 from exam_session import (
     load_exam_state,
@@ -171,6 +172,9 @@ def create_url(course_id: str, term_id: str) -> str:
 
 def _edge_options(profile_dir: Path, *, headless: bool, offscreen: bool = False) -> Options:
     profile_dir.mkdir(parents=True, exist_ok=True)
+    # Edge treats a relative --user-data-dir inconsistently and can crash on
+    # startup, so always hand the browser an absolute path.
+    profile_dir = profile_dir.resolve()
     options = Options()
     options.binary_location = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
     options.add_argument(f"--user-data-dir={profile_dir}")
@@ -192,8 +196,10 @@ def _edge_options(profile_dir: Path, *, headless: bool, offscreen: bool = False)
 
 def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
     try:
-        driver = webdriver.Edge(
-            options=_edge_options(profile_dir, headless=headless),
+        driver = edge_runtime.launch(
+            edge_runtime.prepare_options(
+                _edge_options(profile_dir, headless=headless)
+            )
         )
     except WebDriverException as exc:
         message = str(exc).lower()
@@ -210,8 +216,10 @@ def launch_driver(profile_dir: Path, headless: bool) -> webdriver.Edge:
             "[浏览器] Headless Edge 启动失败，正在改用屏幕外隐藏窗口重试。",
             flush=True,
         )
-        driver = webdriver.Edge(
-            options=_edge_options(profile_dir, headless=False, offscreen=True),
+        driver = edge_runtime.launch(
+            edge_runtime.prepare_options(
+                _edge_options(profile_dir, headless=False, offscreen=True)
+            )
         )
     install_guidance_hook(driver)
     driver.set_page_load_timeout(90)
@@ -1316,6 +1324,31 @@ def finish_question_config(driver, config):
     wait_for(driver, 'input[placeholder="请输入考试名称"]')
 
 
+# A zero-result activity search removes the "共有 N 个教学活动" counter and
+# renders one "暂无数据" block inside the activity list. Require that empty
+# state to persist briefly so the debounced search cannot be mistaken for a
+# finished, empty response.
+ACTIVITY_EMPTY_STATE_SETTLE_SECONDS = 1.5
+ACTIVITY_LIST_EMPTY_SELECTORS = ('.act-list', '.act-wrap')
+
+
+def activity_list_shows_empty_state(driver) -> bool:
+    """Detect the activity list's explicit empty placeholder.
+
+    Scope the lookup to the activity list wrapper: other panels on the page
+    (for example the "即将截止" sidebar) must not be mistaken for the search
+    result. Observed markup: `.act-list .data-status` containing "暂无数据".
+    """
+    for selector in ACTIVITY_LIST_EMPTY_SELECTORS:
+        for element in driver.find_elements(By.CSS_SELECTOR, selector):
+            try:
+                if _is_displayed(element) and '暂无数据' in norm(element.text):
+                    return True
+            except StaleElementReferenceException:
+                continue
+    return False
+
+
 def find_activity(driver, config):
     print('步骤：打开教学活动页。', flush=True)
     open_activity_page(driver, config.course_id)
@@ -1326,14 +1359,32 @@ def find_activity(driver, config):
     set_input(driver, fields[0], config.exam_name)
     fields[0].send_keys(Keys.ENTER)
     print('步骤：搜索并核对考试名称。', flush=True)
+    empty_since = None
     def loaded(d):
+        nonlocal empty_since
         names = visible(d, 'p.name')
         summary = body_text(d)
         count = re.search(r'共有\s*(\d+)\s*个教学活动', summary)
         if not count:
-            if not names and summary.count('暂无数据') >= 2 and not visible(d, '.route-loading'):
-                return ('loaded', [])
-            return False
+            # A zero-result search hides the counter and shows one empty block.
+            settled = (
+                not names
+                and activity_list_shows_empty_state(d)
+                and not visible(d, '.route-loading')
+            )
+            if not settled:
+                empty_since = None
+                return False
+            now = time.monotonic()
+            if empty_since is None:
+                empty_since = now
+                return False
+            return (
+                ('loaded', [])
+                if now - empty_since >= ACTIVITY_EMPTY_STATE_SETTLE_SECONDS
+                else False
+            )
+        empty_since = None
         n = int(count.group(1))
         if n == 0 and not names:
             return ('loaded', [])
@@ -1347,7 +1398,7 @@ def find_activity(driver, config):
     except TimeoutException as exc:
         summary = body_text(driver)
         count = re.search(r'共有\s*(\d+)\s*个教学活动', summary)
-        diagnostic = {'count': count.group(1) if count else None, 'names': [norm(e.text) for e in visible(driver, 'p.name')], 'search_value': fields[0].get_attribute('value'), 'page_text': summary[:750]}
+        diagnostic = {'count': count.group(1) if count else None, 'names': [norm(e.text) for e in visible(driver, 'p.name')], 'empty_state': activity_list_shows_empty_state(driver), 'search_value': fields[0].get_attribute('value'), 'page_text': summary[:750]}
         raise RuntimeError('搜索列表未就绪：' + json.dumps(diagnostic, ensure_ascii=False)) from exc
     return [e for e in names if norm(e.text) == config.exam_name]
 
@@ -2050,7 +2101,7 @@ def ensure_grade_release_task(
     if config.release_at <= datetime.now(BEIJING):
         raise RuntimeError('计划成绩发布时间已经到达；请直接运行 --release-grades。')
     create_task, _, exists, get_name = _scheduler_functions()
-    create_task(
+    created = create_task(
         config_path,
         state_path,
         config.release_at,
@@ -2058,7 +2109,7 @@ def ensure_grade_release_task(
         session_path=session_path,
     )
     name = get_name(config, state)
-    if not exists(name):
+    if created and not exists(name):
         raise RuntimeError('schtasks.exe 返回成功，但重新查询不到成绩发布任务。')
     state['scheduled_grade_release'] = {
         'enabled': True,
@@ -2072,14 +2123,18 @@ def ensure_grade_release_task(
     print(f'成绩发布计划任务已创建：{name}，执行时间 {config.release_at:%Y-%m-%d %H:%M}（北京时间）。')
 
 
-def delete_scheduled_grade_release(config, state, state_path):
+def delete_scheduled_grade_release(config, state, state_path) -> bool:
+    """Delete the grade-release task; False when a restricted sandbox blocks it."""
     _, delete_task, _, _ = _scheduler_functions()
-    delete_task(config, state)
+    removed = delete_task(config, state, state_path=state_path)
     scheduled = state.get('scheduled_grade_release')
     if isinstance(scheduled, dict):
         scheduled['enabled'] = False
         scheduled['deleted_at'] = datetime.now(BEIJING).isoformat()
+        if not removed:
+            scheduled['delete_pending'] = True
     save_state(state_path, state)
+    return removed
 
 
 def verify_published_exam(driver, config, state):
@@ -2164,8 +2219,10 @@ def release_grades_once(args, config, state, state_path):
         if config.release_method != '定时脚本发布' or config.release_at is None:
             raise RuntimeError('当前配置不是定时脚本发布，拒绝发布成绩。')
         if state.get('status') == 'grades_published' and state.get('answers_published'):
-            delete_scheduled_grade_release(config, state, state_path)
-            print('成绩、试卷及答案已经发布；残留的 Windows 计划任务已清理。')
+            if delete_scheduled_grade_release(config, state, state_path):
+                print('成绩、试卷及答案已经发布；残留的 Windows 计划任务已清理。')
+            else:
+                print('成绩、试卷及答案已经发布；计划任务需按 work 目录中的提示手动清理。')
             return 0
         if datetime.now(BEIJING) < config.release_at:
             if getattr(args, 'scheduled_release_check', False):
@@ -2212,13 +2269,16 @@ def release_grades_once(args, config, state, state_path):
     finally:
         if driver is not None:
             driver.quit()
-    delete_scheduled_grade_release(config, state, state_path)
+    removed = delete_scheduled_grade_release(config, state, state_path)
     state.pop('last_error', None)
     state.pop('error_trace', None)
     state.pop('last_page', None)
     state['last_release_success_at'] = datetime.now(BEIJING).isoformat()
     save_state(state_path, state)
-    print('成绩、试卷及答案发布成功，Windows 计划任务已删除。')
+    if removed:
+        print('成绩、试卷及答案发布成功，Windows 计划任务已删除。')
+    else:
+        print('成绩、试卷及答案发布成功；计划任务需按 work 目录中的提示手动清理。')
     return 0
 
 

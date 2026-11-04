@@ -63,6 +63,7 @@ from selenium.webdriver.edge.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.remote.webelement import WebElement
 from responsive_wait import WebDriverWait, responsive_sleep
+import edge_runtime
 
 
 CONTENT_FORMAT = "markdown_latex"
@@ -1288,7 +1289,9 @@ class DeepSeekWebGenerator:
             options.add_argument("--headless=new")
             options.add_argument("--window-size=1600,1200")
 
-        self.driver = webdriver.Edge(options=options)
+        self.driver = edge_runtime.launch(
+            edge_runtime.prepare_options(options)
+        )
         self.driver.set_page_load_timeout(self.config.page_timeout)
         self._active_headless = bool(headless)
         return self.driver

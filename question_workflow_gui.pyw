@@ -1,5 +1,5 @@
-from question_workflow_gui import main
+from gui_launcher import launch_gui
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(launch_gui("question_workflow_gui"))

@@ -24,6 +24,7 @@ from selenium.webdriver.edge.options import Options
 from selenium.webdriver.remote.webelement import WebElement
 from responsive_wait import WebDriverWait
 from platform_guidance import dismiss_platform_guidance, install_guidance_hook
+import edge_runtime
 
 from deepseek_question_generator import (
     GeneratedQuestion,
@@ -277,7 +278,9 @@ class QuestionBankUploader:
         options.page_load_strategy = "eager"
         if headless:
             options.add_argument("--headless=new")
-        self.driver = webdriver.Edge(options=options)
+        self.driver = edge_runtime.launch(
+            edge_runtime.prepare_options(options)
+        )
         install_guidance_hook(self.driver)
         self.driver.set_page_load_timeout(self.config.page_timeout)
         self._active_headless = bool(headless)

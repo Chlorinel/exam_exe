@@ -14,10 +14,14 @@
 1. 把 `setup_new_pc.cmd` 放到准备安装项目的位置。
 2. 双击 `setup_new_pc.cmd`。
 3. 等待程序自动安装所需环境并下载项目。
-4. 安装完成后，项目位于安装脚本旁的 `examworker` 文件夹。
+4. 安装完成后，项目位于安装脚本旁的 `examworker` 文件夹。在已有项目内部运行脚本时，会直接修复该项目的环境，不会再创建嵌套目录。
 5. 打开 `examworker`。需要出题时双击 `question_workflow_gui.pyw`；需要创建、编辑或发布考试时双击 `exam_editor_gui.pyw`。
 
-以后需要更新程序时，删除examworker文件夹，重新双击 `setup_new_pc.cmd`（避免出现奇怪的问题，懒得修bug了，能跑就行）
+支持 Windows x64 和 Python 3.10 至 3.14；未找到兼容 Python 时，安装脚本会通过 winget 安装 Python 3.12 x64。缺少 Git 或 Edge 时同样自动安装，可能需要接受 Windows 的安装授权提示。只有缺少基础软件时才要求 winget；如果缺少 winget，请先从 Microsoft Store 安装“应用安装程序”。安装需要联网。
+
+依赖全部安装在项目的 `.venv` 中，双击两个 `.pyw` 入口也会自动使用该环境。运行异常时可查看 `work/gui-launch.log`。若提示 Qt 运行库或 DLL 无法加载，安装脚本会将实际导入错误显示出来，不会误报安装成功。
+
+以后更新程序时，重新运行项目外层的 `setup_new_pc.cmd`，无需删除 `examworker`。更新只接受可快进的 Git 更新，保留已有配置和工作记录；本地代码修改阻止更新时会停止并提示。在项目内部运行脚本只修复环境，不更新源码。无法使用的旧 `.venv` 会备份到 `.venv.backup-*` 后重建。运行 `setup_new_pc.cmd --check` 可只检查 Edge、项目依赖和主要模块，不下载或安装软件。
 
 ## 准备考试配置
 
@@ -115,6 +119,8 @@
 - 每次 AI 出题的 Session 都有独立运行记录；更换考试配置后无需手动删除旧的 `.state.json`。已经创建过平台草稿的记录仍会保留并受防重复保护。
 - 如果计划任务执行时登录失效，程序会弹出 Edge 并等待登录；超过 6 分钟仍未完成时，会弹出发布失败处理窗口。
 - 不要随意删除 `work` 文件夹、当前考试状态文件或配置表，否则程序可能无法识别已经上传、创建或发布的内容。
+- 如果启动浏览器时报 `SessionNotCreatedException: ... cannot create temp dir for unpacking extensions` 或 `tab crashed`：说明当前电脑上有 AI 助手类程序（Codex / DSH 的 `CodexSandboxService` 等）在运行“工作区沙箱”，它限制本文件夹内启动的程序只能写本文件夹，浏览器因此无法使用系统临时目录。程序已自动把浏览器临时文件改放到 `work/browser-temp`，并在这种受限环境下关闭浏览器自带沙箱，通常无需人工处理；若仍失败，可临时退出该 AI 助手程序后再重试。日志中的 `Metadata cannot be written in cache (C:\Users\...\.cache\selenium)` 只是提示，不影响运行。
+- 如果创建成绩发布计划任务时提示 `Windows 计划任务操作失败（1）：错误: 系统找不到指定的路径。`：同样是上面的受限沙箱在拦截 Windows 计划任务。程序会在 `work` 目录生成 `register-grade-release-task.cmd`，双击运行它，看到“注册成功”后重新打开本程序，再点一次“创建并运行考试”即可（程序会识别已注册的任务并直接完成，不会重复创建考试）。考试成绩发布完成后若无法自动删除该计划任务，同样会生成 `delete-grade-release-task.cmd`，双击清理即可。
 
 ## 日常操作顺序
 
