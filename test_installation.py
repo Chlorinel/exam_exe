@@ -40,11 +40,11 @@ class GuiLauncherTests(unittest.TestCase):
             patch.object(gui_launcher.subprocess, "run", return_value=SimpleNamespace(returncode=0)) as run,
         ):
             self.assertEqual(gui_launcher.launch_gui("question_workflow_gui"), 0)
-            self.assertEqual(run.call_args.args[0], [str(executable), "-E", str(self.root / "question_workflow_gui.pyw"), "argument with spaces"])
+            self.assertEqual(run.call_args.args[0], [str(executable), "-E", "-X", "utf8", str(self.root / "question_workflow_gui.pyw"), "argument with spaces"])
             self.assertEqual(run.call_args.kwargs["cwd"], self.root)
 
-    def test_double_click_uses_pythonw_and_keeps_errors_visible(self):
-        executable = self.root / ".venv/Scripts/pythonw.exe"
+    def test_double_click_uses_hidden_python_and_keeps_errors_visible(self):
+        executable = self.root / ".venv/Scripts/python.exe"
         executable.parent.mkdir(parents=True)
         executable.touch()
         message_box = Mock()
@@ -57,6 +57,7 @@ class GuiLauncherTests(unittest.TestCase):
         ):
             self.assertEqual(gui_launcher.launch_gui("exam_editor_gui"), 1)
             self.assertEqual(run.call_args.args[0][0], str(executable))
+            self.assertEqual(run.call_args.kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
             self.assertIn("gui-launch.log", message_box.call_args.args[1])
 
     def test_missing_environment_gives_installation_instructions(self):
@@ -69,6 +70,24 @@ class GuiLauncherTests(unittest.TestCase):
             self.assertEqual(gui_launcher.launch_gui("question_workflow_gui"), 1)
             self.assertIn("setup_new_pc.cmd", error.getvalue())
             run.assert_not_called()
+
+    def test_handled_business_error_does_not_show_a_second_startup_error(self):
+        executable = self.root / ".venv/Scripts/python.exe"
+        executable.parent.mkdir(parents=True)
+        executable.touch()
+        def run(*args, **kwargs):
+            kwargs["stdout"].write("[APP_RETURN] code=1\n")
+            kwargs["stdout"].flush()
+            return SimpleNamespace(returncode=1)
+        with (
+            patch.object(gui_launcher.sys, "prefix", str(self.root / "system-python")),
+            patch.object(gui_launcher.sys, "stdout", None),
+            patch.object(gui_launcher.sys, "stderr", None),
+            patch.object(gui_launcher.subprocess, "run", side_effect=run),
+            patch.object(gui_launcher.ctypes.windll.user32, "MessageBoxW") as message_box,
+        ):
+            self.assertEqual(gui_launcher.launch_gui("question_workflow_gui"), 1)
+            message_box.assert_not_called()
 
 
 @unittest.skipUnless(sys.platform == "win32", "Windows installer")

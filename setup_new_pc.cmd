@@ -187,12 +187,12 @@ if errorlevel 1 exit /b 1
 exit /b %errorlevel%
 
 :VERIFY_PROJECT
-echo [检查] 核对依赖并实际导入程序和 QtWebEngine
+echo [检查] 核对依赖并实际导入程序和本地公式组件
 "%VENV_PYTHON%" -E -m pip check
 if errorlevel 1 exit /b 1
 pushd "%TARGET_DIR%"
 if errorlevel 1 exit /b 1
-"%VENV_PYTHON%" -E -c "import selenium, PySide6; from PySide6.QtWebEngineWidgets import QWebEngineView; import question_workflow_gui, exam_editor_gui, gui_launcher; print('Import check OK: Selenium', selenium.__version__, 'PySide6', PySide6.__version__)"
+"%VENV_PYTHON%" -E -c "import selenium, PySide6; from pathlib import Path; from PySide6.QtQml import QJSEngine; from PySide6.QtSvg import QSvgRenderer; assert all(Path('assets/mathjax', name).is_file() for name in ('native-math.js','tex-svg-full.js')), 'MathJax assets are missing; download the complete project'; import question_workflow_gui, exam_editor_gui, gui_launcher; print('Import check OK: Selenium', selenium.__version__, 'PySide6', PySide6.__version__)"
 set "VERIFY_EXIT=%errorlevel%"
 popd
 exit /b %VERIFY_EXIT%

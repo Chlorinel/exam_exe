@@ -19,7 +19,7 @@ from exam_session import (
     update_status,
 )
 from create_signal_exam import load_config
-from deepseek_question_generator import load_question_batch
+from deepseek_question_generator import DeepSeekWebConfig, load_question_batch
 from platform_question_uploader import (
     UploadConfig,
     upload_batch,
@@ -28,6 +28,7 @@ from question_review_gui_with_generation import (
     clear_previous_question_json,
     generate_and_review_questions,
     question_batch_file_is_approved,
+    review_question_batch,
 )
 
 
@@ -49,6 +50,20 @@ def reviewed_batch_can_resume(
             and question_batch_file_is_approved(batch_path)
         )
     except Exception:
+        return False
+
+
+def pending_batch_can_resume(batch_path: Path, session_path: Path, exam_name: str) -> bool:
+    """Keep a generated batch after a failed/cancelled review instead of deleting it."""
+    try:
+        session = load_session(Path(session_path))
+        batch = load_question_batch(Path(batch_path))
+        if session.exam_name != exam_name or session.status != "generated":
+            return False
+        expected = [(q.local_id, q.identifier) for q in session.questions]
+        actual = [(q.local_id, q.identifier) for q in batch.questions]
+        return bool(actual) and len({q.local_id for q in batch.questions}) == len(actual) and actual == expected
+    except (OSError, ValueError, TypeError, KeyError):
         return False
 
 
@@ -165,6 +180,14 @@ def prepare_ai_exam_config(
         # location lookup. Reuse that exact reviewed batch to avoid asking
         # DeepSeek again and producing different questions.
         reviewed_batch_path, approved = batch_path, True
+    elif pending_batch_can_resume(batch_path, session_path, base_config.exam_name):
+        reviewed_batch_path = batch_path
+        approved = review_question_batch(
+            batch_path,
+            deepseek_config=DeepSeekWebConfig(profile_dir=deepseek_profile_dir, headless=deepseek_headless),
+            session_path=session_path,
+            exam_name=base_config.exam_name,
+        )
     else:
         # The GUI repeats this after its form is submitted. Keeping the cleanup
         # here also covers integrations that replace the GUI entry point.

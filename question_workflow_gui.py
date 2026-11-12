@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 from pathlib import Path
 
 if sys.stdout is None:
@@ -79,6 +80,7 @@ def main() -> int:
     try:
         run_question_workflow()
     except Exception as exc:
+        traceback.print_exc(file=sys.stderr)
         QMessageBox.critical(None, "题库准备失败", f"{type(exc).__name__}: {exc}")
         return 1
     return 0

@@ -12,7 +12,7 @@ AI 题目人工审核子程序。
 功能：
 - 读取 generated_questions.json
 - 左侧编辑 Markdown + LaTeX 源码
-- 右侧 QWebEngineView + MathJax 实时预览
+- 右侧 Qt + MathJax SVG 本地实时预览
 - 支持：
     通过
     保存修改
@@ -63,8 +63,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent, QFont
+from PySide6.QtCore import QEventLoop, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -94,7 +94,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtWebEngineWidgets import QWebEngineView
+from question_preview import QuestionPreview
 
 from deepseek_question_generator import (
     DeepSeekWebConfig,
@@ -185,10 +185,7 @@ def update_review_session(batch_path: Path, session_path: Path) -> bool:
 # Markdown + LaTeX 预览
 # ============================================================================
 
-MATHJAX_URL = (
-    "https://cdn.jsdelivr.net/npm/mathjax@3/"
-    "es5/tex-mml-chtml.js"
-)
+MATHJAX_URL = (Path(__file__).resolve().parent / "assets/mathjax/tex-svg-full.js").as_uri()
 
 
 def _protect_math(text: str) -> tuple[str, dict[str, str]]:
@@ -312,7 +309,7 @@ def _simple_markdown_to_html(text: str) -> str:
     return rendered
 
 
-def build_question_preview_html(q: GeneratedQuestion) -> str:
+def build_question_preview_html(q: GeneratedQuestion, *, fragment: bool = False) -> str:
     stem = _simple_markdown_to_html(q.stem)
     explanation = _simple_markdown_to_html(q.explanation)
 
@@ -323,10 +320,10 @@ def build_question_preview_html(q: GeneratedQuestion) -> str:
             option = _simple_markdown_to_html(q.options[key])
             rows.append(
                 f"""
-                <div class="option">
-                  <span class="option-key">{html.escape(key)}.</span>
-                  <div class="option-body">{option}</div>
-                </div>
+                <table class="option" cellspacing="0" cellpadding="0"><tr>
+                  <td class="option-key" width="26" valign="top">{html.escape(key)}.</td>
+                  <td class="option-body">{option}</td>
+                </tr></table>
                 """
             )
         options_html = "\n".join(rows)
@@ -345,6 +342,26 @@ def build_question_preview_html(q: GeneratedQuestion) -> str:
         </div>
         """
 
+    body = f"""
+<div class="meta">
+  {html.escape(q.local_id)} · {html.escape(q.chapter)}
+  · {html.escape(q.knowledge_point)} · {html.escape(q.difficulty)}
+  · {html.escape(q.question_type)} · {html.escape(str(q.score))} 分
+</div>
+<div class="question">{stem}</div>
+<div>{options_html}</div>
+<div class="section">
+  <div class="section-title">参考答案</div>
+  <div class="answer">{_simple_markdown_to_html(q.answer)}</div>
+</div>
+<div class="section">
+  <div class="section-title">解析</div>
+  {explanation}
+</div>
+{errors_html}
+"""
+    if fragment:
+        return body
     return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -352,6 +369,7 @@ def build_question_preview_html(q: GeneratedQuestion) -> str:
 <meta name="color-scheme" content="light dark">
 <script>
 MathJax = {{
+  svg: {{fontCache: 'local'}},
   tex: {{
     inlineMath: [['\\\\(', '\\\\)']],
     displayMath: [['\\\\[', '\\\\]']],
@@ -388,13 +406,23 @@ body {{
   margin-bottom: 18px;
 }}
 .option {{
-  display: flex;
-  gap: 10px;
+  width: 100%;
+  border-collapse: collapse;
   margin: 10px 0;
 }}
 .option-key {{
   font-weight: 700;
   min-width: 26px;
+  width: 26px;
+}}
+.option-body {{
+  min-width: 0;
+  vertical-align: top;
+}}
+mjx-container[display="true"] {{
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }}
 .option-body p {{
   margin: 0;
@@ -429,34 +457,7 @@ code {{
 </style>
 </head>
 <body>
-<div class="meta">
-  {html.escape(q.local_id)}
-  · {html.escape(q.chapter)}
-  · {html.escape(q.knowledge_point)}
-  · {html.escape(q.difficulty)}
-  · {html.escape(q.question_type)}
-  · {html.escape(str(q.score))} 分
-</div>
-
-<div class="question">
-{stem}
-</div>
-
-<div>
-{options_html}
-</div>
-
-<div class="section">
-  <div class="section-title">参考答案</div>
-  <div class="answer">{_simple_markdown_to_html(q.answer)}</div>
-</div>
-
-<div class="section">
-  <div class="section-title">解析</div>
-  {explanation}
-</div>
-
-{errors_html}
+<div id="preview-content">{body}</div>
 </body>
 </html>"""
 
@@ -1235,10 +1236,16 @@ class QuestionReviewWindow(QMainWindow):
             "立即刷新"
         )
         preview_head.addWidget(self.preview_button)
+        self.browser_preview_button = QPushButton("浏览器预览")
+        preview_head.addWidget(self.browser_preview_button)
 
         preview_layout.addLayout(preview_head)
 
-        self.preview = QWebEngineView()
+        self.preview_status = QLabel("正在加载公式预览…")
+        self.preview_status.setWordWrap(True)
+        preview_layout.addWidget(self.preview_status)
+        self.preview = QuestionPreview(build_question_preview_html)
+        self.preview.status_changed.connect(self.preview_status.setText)
         preview_layout.addWidget(self.preview, 1)
 
         main_split.addWidget(preview_panel)
@@ -1269,6 +1276,7 @@ class QuestionReviewWindow(QMainWindow):
         self.preview_button.clicked.connect(
             self.refresh_preview
         )
+        self.browser_preview_button.clicked.connect(self.open_browser_preview)
 
         all_edits = [
             self.chapter_edit,
@@ -1298,6 +1306,7 @@ class QuestionReviewWindow(QMainWindow):
         self.preview_timer.timeout.connect(
             self.refresh_preview
         )
+        self.auto_preview.toggled.connect(self._auto_preview_toggled)
 
     def _build_menu(self) -> None:
         file_menu = self.menuBar().addMenu("文件")
@@ -1401,9 +1410,7 @@ class QuestionReviewWindow(QMainWindow):
         ):
             widget.setEnabled(False)
 
-        self.preview.setHtml(
-            "<h2>当前没有题目。</h2>"
-        )
+        self.preview.clear_question()
 
     def load_question(self, index: int) -> None:
         if not self.batch.questions:
@@ -1489,6 +1496,12 @@ class QuestionReviewWindow(QMainWindow):
         if self.auto_preview.isChecked():
             self.preview_timer.start()
 
+    def _auto_preview_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self.refresh_preview()
+        else:
+            self.preview_timer.stop()
+
     def _question_from_form(
         self,
     ) -> GeneratedQuestion:
@@ -1566,14 +1579,22 @@ class QuestionReviewWindow(QMainWindow):
             self.approve_button.setEnabled(True)
 
     def refresh_preview(self) -> None:
+        self.preview_timer.stop()
         if not self.batch.questions:
             return
 
         q = self._question_from_form()
         self._update_validation(q)
-        self.preview.setHtml(
-            build_question_preview_html(q)
-        )
+        self.preview.set_question(q)
+
+    def open_browser_preview(self) -> None:
+        if not self.batch.questions:
+            return
+        q = self._question_from_form()
+        preview_path = self.batch_path.parent / f"{self.batch_path.stem}.preview.html"
+        preview_path.write_text(build_question_preview_html(q), encoding="utf-8")
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(preview_path))):
+            QMessageBox.warning(self, "无法打开浏览器预览", f"请手动打开：{preview_path}")
 
     # ------------------------------------------------------------------
     # 持久化
